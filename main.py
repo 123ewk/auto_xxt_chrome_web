@@ -1,17 +1,19 @@
 #!/usr/bin/env python
 """
-sua_ke — 学习通自动刷课脚本 (PyAutoGUI + 识图)
+sua_ke — 学习通自动刷课脚本 (OCR 版)
+
+基于 OCR 文字识别的半自动刷课脚本。
+无需截图模板，自动识别屏幕上中文字按钮。
 
 Usage:
     python main.py                    # 正常模式
-    python main.py --calibrate        # 截取模板图片
-    python main.py --status           # 查看模板状态
+    python main.py --speed 1.5        # 1.5 倍速
 
-半自动模式:
+操作流程:
     1. 手动在 Chrome 中打开学习通课程页面
     2. 切换到有视频的章节
     3. 运行本脚本
-    4. 脚本会自动播放、静音、加速、检测弹窗、跳到下一节
+    4. 脚本通过 OCR 自动识别并操作
 """
 
 import argparse
@@ -29,9 +31,7 @@ import config
 from actions.navigation import try_click_next_section, has_more_content
 from actions.popup import detect_and_handle_popup, handle_quiz_popup
 from actions.video import play_current_video, set_speed_with_fallback, monitor_video_progress
-from core.clicker import click_template
-from core.screenshot import capture_region_for_training
-from templates import load_templates, list_missing, print_status
+from core.ocr import ocr_status
 
 
 def setup_logging():
@@ -49,133 +49,118 @@ def setup_logging():
         level="DEBUG",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level:7} | {name}:{line} | {message}",
     )
-    logger.info("Logging initialized")
+    logger.info("日志初始化完成")
 
 
-def calibrate_templates():
-    """Interactive template capture mode.
+def preflight_check() -> bool:
+    """Run preflight checks before starting automation.
 
-    Guides the user through capturing each missing template image.
+    Verifies:
+    - Tesseract OCR is installed and has Chinese language pack
+    - Screen resolution is reasonable
+
+    Returns:
+        True if all checks pass.
     """
-    templates = load_templates()
-    missing = list_missing(templates)
+    status = ocr_status()
+    if not status["available"]:
+        logger.error("Tesseract OCR 不可用！请检查安装。")
+        print("\n错误: Tesseract OCR 未正确配置。")
+        print(f"  配置路径: {status['tesseract_path']}")
+        print("  请确认已安装 Tesseract OCR 并包含中文语言包。")
+        return False
 
-    if not missing:
-        logger.info("所有模板已截图完毕，无需重复截图")
-        print("All templates already captured!")
-        return
+    logger.info(f"OCR 引擎: {status['tesseract_path']}")
+    logger.info(f"语言包: {status['languages']}")
 
-    logger.info(f"开始模板截图，共需截图 {len(missing)} 个模板")
-    print(f"\n=== 模板截图工具 ===")
-    print(f"需要截图 {len(missing)} 个模板。")
-    print("请确保对应的界面元素在屏幕上是可见的。\n")
-    print("提示：")
-    print("  - 只框选按钮/图标本身，不要包含背景")
-    print("  - 截图后将自动保存为 PNG 格式\n")
-    input("按 Enter 开始截图...")
+    if "chi_sim" not in status["languages"]:
+        logger.error("缺少中文语言包 (chi_sim)")
+        print("\n错误: Tesseract 缺少中文语言包 (chi_sim)。")
+        print("  请下载 chi_sim.traineddata 放到 tessdata 目录。")
+        return False
 
-    for i, name in enumerate(missing, 1):
-        logger.info(f"截图进度: {i}/{len(missing)} — 正在截图 '{name}'")
-        print(f"\n--- ({i}/{len(missing)}) 截图: {name} ---")
-        capture_region_for_training(
-            save_path=config.TEMPLATES_DIR / f"{name}.png",
-            description=f"请将 '{name}' 放在屏幕可见位置，然后继续。",
-        )
-        logger.info(f"'{name}' 模板已保存到 templates/{name}.png")
+    screen_w, screen_h = pyautogui.size()
+    logger.info(f"屏幕分辨率: {screen_w}x{screen_h}")
 
-    # Verify
-    logger.info("模板截图全部完成，验证中...")
-    print("\n=== 验证 ===")
-    print_status(load_templates())
-    logger.info(f"模板截图结束，共完成 {len(missing)} 个")
+    return True
 
 
 def main_loop(stop_event=None):
     """Main automation loop.
 
-    1. Detect video → play → mute → speed → monitor
+    1. OCR pre-check → play → mute → speed → monitor
     2. On completion → navigate to next section
     3. Check for popups on every cycle
     4. Repeat until no more content
 
     Args:
-        stop_event: Optional threading.Event to signal stop.
+        stop_event: Optional threading.Event for external stop.
     """
-    logger.info("=== sua_ke automation started ===")
-    logger.info(f"Templates dir: {config.TEMPLATES_DIR}")
-    logger.info(f"Speed target: {config.SPEED_DEFAULT}x")
-    logger.info(f"Fail-safe: {'ON' if config.PYAUTOGUI_FAILSAFE else 'OFF'}")
+    logger.info("=== sua_ke OCR 自动化开始 ===")
+    logger.info(f"目标速度: {config.SPEED_DEFAULT}x")
 
-    # Enable PyAutoGUI fail-safe (move mouse to corner to abort)
+    # PyAutoGUI settings
     pyautogui.FAILSAFE = config.PYAUTOGUI_FAILSAFE
     pyautogui.PAUSE = config.PYAUTOGUI_PAUSE
 
     # Wait for user to focus the correct window
-    print("\n=== Ready ===")
-    print("Switch to your Chrome window with the course page.")
-    print(f"Starting in 5 seconds... (move mouse to top-left to abort)")
-    for i in range(5, 0, -1):
+    print("\n=== 准备就绪 ===")
+    print("请切换到 Chrome 学习通课程页面。")
+    print(f"倒计时 {config.START_COUNTDOWN} 秒后开始... (Ctrl+C 中止)")
+    for i in range(config.START_COUNTDOWN, 0, -1):
         print(f"  {i}...")
         time.sleep(1)
-
-    # Load templates
-    templates = load_templates()
-    missing = list_missing(templates)
-    if missing:
-        logger.warning(f"Missing templates: {', '.join(missing)}")
-        logger.warning("Run 'python main.py --calibrate' to capture them")
 
     cycle_count = 0
 
     while not (stop_event and stop_event.is_set()):
         cycle_count += 1
-        logger.info(f"--- Cycle {cycle_count} ---")
+        logger.info(f"--- 第 {cycle_count} 轮循环 ---")
 
         # 1. Handle any popups first
         try:
-            detect_and_handle_popup(templates)
+            detect_and_handle_popup()
         except Exception as e:
-            logger.error(f"Popup detection error: {e}")
+            logger.error(f"弹窗检测出错: {e}")
 
         # 2. Check for quiz popups
         try:
-            handle_quiz_popup(templates)
+            handle_quiz_popup()
         except Exception as e:
-            logger.error(f"Quiz popup error: {e}")
+            logger.error(f"测验弹窗出错: {e}")
 
         # 3. Play current video
         try:
-            play_current_video(templates)
-            set_speed_with_fallback(templates)
+            play_current_video()
+            set_speed_with_fallback()
         except Exception as e:
-            logger.error(f"Video play/speed error: {e}")
+            logger.error(f"视频控制出错: {e}")
 
         # 4. Monitor progress
         try:
-            completed = monitor_video_progress(templates, stop_event=stop_event)
+            completed = monitor_video_progress(stop_event=stop_event)
         except Exception as e:
-            logger.error(f"Video monitor error: {e}")
+            logger.error(f"视频监控出错: {e}")
             completed = False
 
         if stop_event and stop_event.is_set():
             break
 
         if not completed:
-            logger.warning("Video did not complete normally, checking for more content...")
+            logger.warning("视频未正常完成，继续检查是否有更多内容...")
 
         # 5. Navigate to next section
         try:
-            navigated = try_click_next_section(templates)
+            navigated = try_click_next_section()
         except Exception as e:
-            logger.error(f"Navigation error: {e}")
+            logger.error(f"导航出错: {e}")
             navigated = False
 
-        # 6. Check if there's more content
+        # 6. Check if done
         if not navigated:
-            has_more = has_more_content(templates)
-            if not has_more:
-                logger.info("No more content detected — automation complete!")
-                logger.info("=== Done ===")
+            if not has_more_content():
+                logger.info("全部任务完成！自动化结束。")
+                print("\n=== 全部完成 ===")
                 return
 
         # Brief pause before next cycle
@@ -183,17 +168,7 @@ def main_loop(stop_event=None):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="学习通自动刷课脚本")
-    parser.add_argument(
-        "--calibrate",
-        action="store_true",
-        help="截取模板图片（引导式）",
-    )
-    parser.add_argument(
-        "--status",
-        action="store_true",
-        help="查看模板状态",
-    )
+    parser = argparse.ArgumentParser(description="学习通自动刷课脚本 (OCR 版)")
     parser.add_argument(
         "--speed",
         type=float,
@@ -204,7 +179,7 @@ def parse_args():
         "--countdown",
         type=int,
         default=5,
-        help="启动前的倒计时秒数，默认 5",
+        help="启动前倒计时秒数，默认 5",
     )
     return parser.parse_args()
 
@@ -216,19 +191,17 @@ if __name__ == "__main__":
 
     if args.speed != config.SPEED_DEFAULT:
         config.SPEED_DEFAULT = args.speed
-        logger.info(f"Speed override: {args.speed}x")
+        logger.info(f"速度覆盖: {args.speed}x")
 
-    if args.status:
-        templates = load_templates()
-        print_status(templates)
+    config.START_COUNTDOWN = args.countdown
+
+    # Preflight check
+    if not preflight_check():
+        sys.exit(1)
+
+    try:
+        main_loop()
+    except KeyboardInterrupt:
+        logger.info("用户按 Ctrl+C 中止")
+        print("\n已中止")
         sys.exit(0)
-
-    if args.calibrate:
-        calibrate_templates()
-        sys.exit(0)
-
-    if args.countdown != 5:
-        # The countdown is handled in main_loop, just pass it along usage.
-        pass
-
-    main_loop()
