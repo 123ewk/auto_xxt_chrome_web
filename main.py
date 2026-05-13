@@ -61,28 +61,33 @@ def calibrate_templates():
     missing = list_missing(templates)
 
     if not missing:
+        logger.info("所有模板已截图完毕，无需重复截图")
         print("All templates already captured!")
         return
 
-    print(f"\n=== Template Calibration ===")
-    print(f"Need to capture {len(missing)} templates.")
-    print("For each template, you'll select a region on screen.\n")
-    print("Tips:")
-    print("  - Make sure the element is visible on screen")
-    print("  - Select only the button/icon itself (tight crop)")
-    print("  - PNG format will be saved automatically\n")
-    input("Press Enter to start...")
+    logger.info(f"开始模板截图，共需截图 {len(missing)} 个模板")
+    print(f"\n=== 模板截图工具 ===")
+    print(f"需要截图 {len(missing)} 个模板。")
+    print("请确保对应的界面元素在屏幕上是可见的。\n")
+    print("提示：")
+    print("  - 只框选按钮/图标本身，不要包含背景")
+    print("  - 截图后将自动保存为 PNG 格式\n")
+    input("按 Enter 开始截图...")
 
-    for name in missing:
-        print(f"\n--- Capturing: {name} ---")
+    for i, name in enumerate(missing, 1):
+        logger.info(f"截图进度: {i}/{len(missing)} — 正在截图 '{name}'")
+        print(f"\n--- ({i}/{len(missing)}) 截图: {name} ---")
         capture_region_for_training(
             save_path=config.TEMPLATES_DIR / f"{name}.png",
-            description=f"Position the '{name}' element on screen, then continue.",
+            description=f"请将 '{name}' 放在屏幕可见位置，然后继续。",
         )
+        logger.info(f"'{name}' 模板已保存到 templates/{name}.png")
 
     # Verify
-    print("\n=== Verification ===")
+    logger.info("模板截图全部完成，验证中...")
+    print("\n=== 验证 ===")
     print_status(load_templates())
+    logger.info(f"模板截图结束，共完成 {len(missing)} 个")
 
 
 def main_loop(stop_event=None):

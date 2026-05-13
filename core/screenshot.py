@@ -184,16 +184,23 @@ def capture_region_for_training(
     """
     if description:
         print(f"\n{description}")
+    logger.info("请将鼠标移动到要截图区域的左上角，然后按 Enter")
     print("Move to the top-left corner of the region and press Enter...")
     input()
     x1, y1 = pyautogui.position()
+    logger.info(f"左上角坐标: ({x1}, {y1})")
     print("Move to the bottom-right corner and press Enter...")
+    logger.info("请将鼠标移动到要截图区域的右下角，然后按 Enter")
     input()
     x2, y2 = pyautogui.position()
+    logger.info(f"右下角坐标: ({x2}, {y2})")
 
     x, y = min(x1, x2), min(y1, y2)
     w, h = abs(x2 - x1), abs(y2 - y1)
+    logger.info(f"截图区域: ({x}, {y}, {w}x{h})")
 
     img = pyautogui.screenshot(region=(x, y, w, h))
     img.save(str(save_path))
+    file_size = Path(save_path).stat().st_size
+    logger.info(f"模板已保存: {save_path} ({file_size} bytes)")
     print(f"Saved to {save_path}")
