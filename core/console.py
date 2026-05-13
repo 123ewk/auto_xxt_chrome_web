@@ -10,6 +10,7 @@ Strategy:
 import time
 
 import pyautogui
+import pygetwindow as gw
 import pyperclip
 from loguru import logger
 
@@ -65,6 +66,38 @@ def _switch_to_english_ime():
         pass
 
 
+def _focus_chrome_window():
+    """Activate the Chrome window using pygetwindow (no mouse click).
+
+    Finds the first Chrome window and brings it to foreground.
+    Falls back to clicking the title bar if pygetwindow fails.
+    """
+    try:
+        chrome_windows = [
+            w for w in gw.getWindowsWithTitle("")
+            if "chrome" in w.title.lower() or "Chrome" in w.title
+            or "Google Chrome" in w.title
+        ]
+        # Filter to only visible windows
+        chrome_windows = [w for w in chrome_windows if w.visible]
+
+        if chrome_windows:
+            chrome_windows[0].activate()
+            time.sleep(0.8)
+            logger.debug("Chrome 窗口已激活")
+            return True
+        else:
+            logger.warning("未找到 Chrome 窗口，尝试点击标题栏")
+    except Exception as e:
+        logger.warning(f"pygetwindow 激活 Chrome 失败: {e}")
+
+    # Fallback: click top-center of screen (title bar area)
+    screen_w, _ = pyautogui.size()
+    pyautogui.click(screen_w // 2, 5)
+    time.sleep(0.5)
+    return False
+
+
 def _focus_console():
     """Focus the DevTools Console panel and its input area.
 
@@ -116,10 +149,14 @@ def inject_js(js_code: str) -> None:
     Args:
         js_code: JavaScript code to execute.
     """
-    ensure_devtools(open_it=True)
-
-    # Switch to English IME to avoid interference
+    # Switch to English IME FIRST — otherwise Ctrl+Shift+I gets
+    # intercepted by Chinese IME as an IME-switch shortcut
     _switch_to_english_ime()
+
+    # Activate Chrome window to ensure the hotkey reaches it
+    _focus_chrome_window()
+
+    ensure_devtools(open_it=True)
 
     # Focus the Console input area
     _focus_console()
