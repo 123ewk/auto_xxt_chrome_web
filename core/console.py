@@ -84,13 +84,6 @@ def _focus_console():
     pyautogui.click(input_x, input_y)
     time.sleep(0.5)
 
-    # --- Step 3: Ensure input is clean and focused ---
-    # Select all existing text and delete it
-    pyautogui.hotkey("ctrl", "a")
-    time.sleep(0.15)
-    pyautogui.press("delete")
-    time.sleep(0.15)
-
     logger.debug("Console 输入框已聚焦")
 
 

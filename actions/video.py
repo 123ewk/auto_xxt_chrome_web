@@ -1,9 +1,7 @@
 """Video detection, playback control and progress monitoring.
 
-Strategy:
-1. Click the video area first to focus the page
-2. Use DevTools console injection for play/mute/speed
-3. Monitor via OCR for completion markers
+All video control is done through Chrome DevTools console injection —
+no mouse clicks on the video player to avoid double-trigger issues.
 """
 
 import time
@@ -20,39 +18,16 @@ from core.console import (
 from core.ocr import find_text
 
 
-def _click_video_area():
-    """Click the center area of the screen where the video player usually is.
-
-    This ensures:
-    - The Chrome page has focus (not some other window)
-    - The video player might start playing from the click
-    - Any overlay/play-button in the player gets clicked
-    """
-    screen_w, screen_h = pyautogui.size()
-    # Video player is typically in the upper 2/3 of the screen
-    video_x = screen_w // 2
-    video_y = screen_h // 3
-    logger.info(f"点击视频区域 ({video_x}, {video_y})")
-    pyautogui.click(video_x, video_y)
-    time.sleep(2)
-
-
 def play_current_video() -> bool:
-    """Ensure the current video is playing.
+    """Play the current video using DevTools console injection only.
 
-    Steps:
-    1. Click the video area to give Chrome focus
-    2. Use DevTools to call video.play()
-    3. Mute via DevTools
+    No mouse clicks on the video player — the play command is sent
+    directly to the <video> element via JavaScript.
 
     Returns:
         True if operations were executed.
     """
     logger.info("=== 处理视频 ===")
-
-    # Step 0: Click the video area first to focus the page
-    logger.info("点击视频区域以聚焦页面")
-    _click_video_area()
 
     # Step 1: Inject play() via DevTools
     logger.info("通过 DevTools 执行 video.play()")
