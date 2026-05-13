@@ -1,7 +1,13 @@
-"""Chrome DevTools console injection utilities."""
+"""Chrome DevTools console injection utilities.
+
+Strategy for focusing the console:
+1. Open DevTools with Ctrl+Shift+I
+2. Click the Console tab position (top of DevTools panel)
+3. Click the console input area (bottom of DevTools panel)
+4. Type and execute JS
+"""
 
 import time
-from typing import Any
 
 import pyautogui
 from loguru import logger
@@ -16,18 +22,18 @@ def open_devtools():
     """Open Chrome DevTools via Ctrl+Shift+I."""
     global _devtools_open
     pyautogui.hotkey(*config.DEVTOOLS_HOTKEY)
-    time.sleep(1.5)
+    time.sleep(2.0)
     _devtools_open = True
-    logger.debug("DevTools opened")
+    logger.info("DevTools 已打开")
 
 
 def close_devtools():
     """Close Chrome DevTools via Ctrl+Shift+I."""
     global _devtools_open
     pyautogui.hotkey(*config.DEVTOOLS_HOTKEY)
-    time.sleep(0.8)
+    time.sleep(1.0)
     _devtools_open = False
-    logger.debug("DevTools closed")
+    logger.info("DevTools 已关闭")
 
 
 def ensure_devtools(open_it: bool = True):
@@ -43,81 +49,129 @@ def ensure_devtools(open_it: bool = True):
         close_devtools()
 
 
+def _focus_console():
+    """Focus the DevTools Console panel and its input area.
+
+    Works by:
+    1. Clicking the Console tab at the top of the DevTools panel area
+    2. Clicking the console input at the bottom
+
+    Assumes DevTools is docked to the bottom (most common layout).
+    """
+    screen_w, screen_h = pyautogui.size()
+
+    # Estimate where DevTools panel starts from the bottom
+    # DevTools docked to bottom usually occupies the bottom 35-40% of screen
+    devtools_top_y = int(screen_h * 0.62)  # where DevTools panel starts
+    tab_bar_y = devtools_top_y + 15         # roughly middle of tab bar
+
+    # --- Step 1: Click the Console tab ---
+    # Console tab is typically the 2nd tab after "Elements"
+    # Position: ~150-250px from left edge, at the top of DevTools panel
+    console_tab_x = 200
+    console_tab_y = tab_bar_y
+
+    logger.debug(f"点击 Console 标签页 ({console_tab_x}, {console_tab_y})")
+    pyautogui.click(console_tab_x, console_tab_y)
+    time.sleep(1.0)  # wait for panel switch
+
+    # --- Step 2: Click the console input area ---
+    # After switching to Console panel, the input area is at the bottom of panel
+    input_y = screen_h - 50    # near bottom of screen
+    input_x = screen_w // 2
+
+    logger.debug(f"点击 Console 输入框 ({input_x}, {input_y})")
+    pyautogui.click(input_x, input_y)
+    time.sleep(0.5)
+
+    # --- Step 3: Ensure input is clean and focused ---
+    # Select all existing text and delete it
+    pyautogui.hotkey("ctrl", "a")
+    time.sleep(0.15)
+    pyautogui.press("delete")
+    time.sleep(0.15)
+
+    logger.debug("Console 输入框已聚焦")
+
+
+def _click_in_console_and_type(js_code: str):
+    """Type JS code into the focused console input and execute.
+
+    Args:
+        js_code: JavaScript code to execute.
+    """
+    # Type the JS code with small delay between characters for reliability
+    pyautogui.write(js_code, interval=0.05)
+    time.sleep(0.3)
+    # Execute
+    pyautogui.press("enter")
+    time.sleep(0.8)
+    logger.debug(f"已执行 JS: {js_code[:60]}{'...' if len(js_code) > 60 else ''}")
+
+
 def inject_js(js_code: str) -> None:
     """Inject and execute JavaScript via DevTools console.
 
-    Opens DevTools if needed, types the JS into the console, executes it.
+    Opens DevTools, focuses the Console panel, types JS, and executes it.
 
     Args:
         js_code: JavaScript code to execute.
     """
     ensure_devtools(open_it=True)
-    time.sleep(0.5)
 
-    # Click on the console input area
-    # The console prompt is typically at the bottom of DevTools.
-    # We focus it by clicking on the last section of the screen.
-    screen_w, screen_h = pyautogui.size()
-    console_x = screen_w // 2
-    console_y = screen_h - 60  # near bottom
+    # Focus the Console panel and its input
+    _focus_console()
 
-    pyautogui.click(console_x, console_y)
-    time.sleep(0.3)
-
-    # Type the JS code and execute
-    # Use triple click to select all existing text, then type
-    pyautogui.tripleClick(console_x, console_y)
-    time.sleep(0.2)
-
-    pyautogui.write(js_code, interval=0.05)
-    time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.5)
-
-    logger.debug(f"Injected JS: {js_code[:80]}{'...' if len(js_code) > 80 else ''}")
+    # Type and execute the JS code
+    _click_in_console_and_type(js_code)
 
 
 def execute_video_js(js_code: str, fallback_action: callable = None) -> bool:
     """Execute JS on a video element with fallback.
 
-    Tries console injection first. If the script is at 1x speed
-    after injection (detected externally), calls fallback_action.
-
     Args:
         js_code: JavaScript to execute.
-        fallback_action: Callable to invoke if injection fails.
+        fallback_action: Callable if injection fails.
 
     Returns:
-        True if injection was attempted, False on critical failure.
+        True if injection was attempted.
     """
     try:
         inject_js(js_code)
         time.sleep(1.0)
         return True
     except Exception as e:
-        logger.error(f"JS injection failed: {e}")
+        logger.error(f"JS 注入失败: {e}")
         if fallback_action:
-            logger.info("Running fallback action...")
+            logger.info("执行备用方案...")
             fallback_action()
         return False
 
 
+def _video_selector_js() -> str:
+    """JavaScript snippet to find a video element with multiple selectors.
+
+    Returns:
+        JS code string that assigns the found video element to variable 'v'.
+    """
+    return (
+        "var v=document.querySelector('video')"
+        "||document.querySelector('video[class*=video]')"
+        "||document.querySelector('.vjs-tech');"
+    )
+
+
 def set_video_speed(speed: float = 2.0) -> None:
     """Set video playback speed via DevTools console injection.
-
-    Attempts to set speed on the first <video> element found.
-    Uses multiple selector fallbacks.
 
     Args:
         speed: Target playback speed (e.g., 2.0 for 2x).
     """
     js = (
         f"(function(){{"
-        f"  const v = document.querySelector('video') "
-        f"    || document.querySelector('video[class*=video]') "
-        f"    || document.querySelector('.vjs-tech');"
-        f"  if(v){{v.playbackRate={speed}; console.log('Speed set to '+v.playbackRate);}}"
-        f"  else{{console.log('No video element found');}}"
+        f"  {_video_selector_js()}"
+        f"  if(v){{v.playbackRate={speed};console.log('Speed:'+v.playbackRate);}}"
+        f"  else{{console.log('No video element');}}"
         f"}})()"
     )
     inject_js(js)
@@ -127,63 +181,24 @@ def mute_video() -> None:
     """Mute video via DevTools console injection."""
     js = (
         "(function(){"
-        "  const v = document.querySelector('video') "
-        "    || document.querySelector('video[class*=video]') "
-        "    || document.querySelector('.vjs-tech');"
-        "  if(v){v.muted=true; console.log('Video muted');}"
-        "  else{console.log('No video element found for mute');}"
+        f"  {_video_selector_js()}"
+        "  if(v){v.muted=true;console.log('Muted');}"
+        "  else{console.log('No video for mute');}"
         "})()"
     )
     inject_js(js)
-
-
-def check_video_state() -> dict[str, Any]:
-    """Check video playback state via DevTools console.
-
-    Returns:
-        Dict with keys: 'paused', 'ended', 'currentTime', 'duration', 'playbackRate'.
-        All values default to None on failure.
-    """
-    js = (
-        "(function(){"
-        "  const v=document.querySelector('video')"
-        "    || document.querySelector('video[class*=video]')"
-        "    || document.querySelector('.vjs-tech');"
-        "  if(!v) return 'NO_VIDEO';"
-        "  return JSON.stringify({"
-        "    paused:v.paused, ended:v.ended,"
-        "    currentTime:v.currentTime, duration:v.duration,"
-        "    playbackRate:v.playbackRate"
-        "  });"
-        "})()"
-    )
-
-    ensure_devtools(open_it=True)
-    time.sleep(0.3)
-
-    # Clear console, inject, read results via screenshot of console area
-    # Since reading console output is complex with pyautogui alone,
-    # we rely on external verification via screenshot matching.
-    inject_js(js)
-
-    # The result appears in the console. We'll use the return value pattern.
-    # For practical purposes, the caller should verify speed/progress
-    # via screenshot/template matching.
-    return {}
 
 
 def click_play_button_if_paused() -> bool:
-    """Try to click the play button via injecting video.play().
+    """Call video.play() via DevTools if the video is paused.
 
     Returns:
-        True if play() was called.
+        True if the play command was sent.
     """
     js = (
         "(function(){"
-        "  const v=document.querySelector('video')"
-        "    || document.querySelector('video[class*=video]')"
-        "    || document.querySelector('.vjs-tech');"
-        "  if(v && v.paused){v.play(); console.log('play() called'); return true;}"
+        f"  {_video_selector_js()}"
+        "  if(v&&v.paused){v.play();console.log('Play');return true;}"
         "  return false;"
         "})()"
     )
