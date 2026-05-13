@@ -1,13 +1,7 @@
 """Video detection, playback control and progress monitoring.
 
-Video control flow:
-1. Click the page (non-video area) to give Chrome focus
-2. Open DevTools first (before any play happens)
-3. Inject all JS commands: play → mute → speed
-4. Close DevTools to avoid detection
-
-This avoids the issue where opening DevTools mid-playback
-triggers the platform's anti-cheat pause.
+All video control is done through DevTools console injection.
+No random mouse clicks — the script only interacts with DevTools.
 """
 
 import time
@@ -20,55 +14,38 @@ from core.console import (
     set_video_speed,
     mute_video,
     click_play_button_if_paused,
-    close_devtools,
 )
 from core.ocr import find_text
 
 
-def _focus_chrome():
-    """Click a neutral area of the Chrome window to ensure it has focus.
-
-    Clicks the very top-left of the screen (Chrome tab bar area)
-    to focus Chrome without interacting with the video player.
-    """
-    pyautogui.click(50, 30)  # top-left: Chrome tab/address bar area
-    time.sleep(1)
-
-
 def play_current_video() -> bool:
-    """Play the current video.
+    """Play the current video via DevTools console injection.
 
-    Sequence:
-    1. Focus Chrome window (neutral click on tab area)
-    2. Open DevTools and inject play/mute/speed commands
-    3. Close DevTools to minimize detection window
+    Opens DevTools and injects play() → mute() → speed() sequentially.
+    No mouse clicks on the page.
 
     Returns:
         True if operations were executed.
     """
     logger.info("=== 处理视频 ===")
 
-    # Step 1: Focus Chrome
-    _focus_chrome()
-
-    # Step 2: Open DevTools and inject all commands sequentially
-    # DevTools is opened first so the platform only sees one focus
-    # transition (page → DevTools), then immediately injects everything
-    logger.info("通过 DevTools 执行播放、静音、加速")
+    # All video control happens through DevTools console injection
+    logger.info("通过 DevTools 执行播放")
     click_play_button_if_paused()
-    time.sleep(1)
+    time.sleep(1.5)
+
+    logger.info("通过 DevTools 执行静音")
     mute_video()
     time.sleep(1)
-    set_speed_with_fallback_inline()
 
-    # Step 3: Close DevTools so the page can focus back
-    # close_devtools()
+    logger.info("通过 DevTools 执行加速")
+    set_speed_with_fallback_inline()
 
     return True
 
 
 def set_speed_with_fallback_inline() -> float:
-    """Set speed with fallback (inline version, no separate DevTools open)."""
+    """Set speed with fallback."""
     speed = config.SPEED_DEFAULT
 
     for attempt in range(config.SPEED_RETRY_COUNT + 1):
@@ -89,7 +66,6 @@ def set_speed_with_fallback_inline() -> float:
 
 
 def set_speed_with_fallback() -> float:
-    """Alias for external callers."""
     return set_speed_with_fallback_inline()
 
 
@@ -134,10 +110,5 @@ def monitor_video_progress(stop_event=None) -> bool:
 
 
 def _player_region() -> tuple[int, int, int, int]:
-    """Return estimated video player bottom area for OCR scanning.
-
-    Returns:
-        (x, y, w, h) — bottom portion of screen where player controls are.
-    """
     screen_w, screen_h = pyautogui.size()
     return (0, screen_h * 2 // 3, screen_w, screen_h // 3)

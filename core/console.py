@@ -1,15 +1,16 @@
 """Chrome DevTools console injection utilities.
 
-Strategy for focusing the console:
+Strategy:
 1. Open DevTools with Ctrl+Shift+I
-2. Click the Console tab position (top of DevTools panel)
-3. Click the console input area (bottom of DevTools panel)
-4. Type and execute JS
+2. Click the Console panel area (right-middle of DevTools)
+3. Paste JS code via clipboard (Ctrl+V) — avoids IME/keyboard issues
+4. Press Enter to execute
 """
 
 import time
 
 import pyautogui
+import pyperclip
 from loguru import logger
 
 import config
@@ -37,11 +38,7 @@ def close_devtools():
 
 
 def ensure_devtools(open_it: bool = True):
-    """Ensure DevTools is in the desired state.
-
-    Args:
-        open_it: True to open, False to close.
-    """
+    """Ensure DevTools is in the desired state."""
     global _devtools_open
     if open_it and not _devtools_open:
         open_devtools()
@@ -49,86 +46,90 @@ def ensure_devtools(open_it: bool = True):
         close_devtools()
 
 
+def _switch_to_english_ime():
+    """Try to switch to English input method to avoid IME interference.
+
+    Attempts multiple methods:
+    1. Win+Space (Windows 10/11 IME switcher)
+    2. Alt+Shift (legacy IME switcher)
+    3. Ctrl+Space (IME toggle)
+    """
+    try:
+        # Try Win+Space first (most reliable on Win10/11)
+        pyautogui.hotkey("win", "space")
+        time.sleep(0.5)
+        # Press space again to select English if the menu opened
+        pyautogui.press("space")
+        time.sleep(0.3)
+    except Exception:
+        pass
+
+
 def _focus_console():
     """Focus the DevTools Console panel and its input area.
 
-    Works by:
-    1. Clicking the Console tab at the top of the DevTools panel area
-    2. Clicking the console input at the bottom
-
-    Assumes DevTools is docked to the bottom (most common layout).
+    Clicks the right-middle area of the DevTools panel where
+    the console input prompt is typically located.
     """
     screen_w, screen_h = pyautogui.size()
 
-    # Estimate where DevTools panel starts from the bottom
-    # DevTools docked to bottom usually occupies the bottom 35-40% of screen
-    devtools_top_y = int(screen_h * 0.62)  # where DevTools panel starts
-    tab_bar_y = devtools_top_y + 15         # roughly middle of tab bar
+    # Click the right-middle area of the DevTools panel
+    # where the console input prompt (>) appears
+    input_x = int(screen_w * 0.85)
+    input_y = screen_h - 600
 
-    # --- Step 1: Click the Console tab ---
-    # Console tab is typically the 2nd tab after "Elements"
-    # Position: ~150-250px from left edge, at the top of DevTools panel
-    console_tab_x = int(screen_w * 0.1)
-    console_tab_y = tab_bar_y
-
-    logger.debug(f"点击 Console 标签页 ({console_tab_x}, {console_tab_y})")
-    pyautogui.click(console_tab_x, console_tab_y)
-    time.sleep(1.0)  # wait for panel switch
-
-    # --- Step 2: Click the console input area ---
-    # Console input prompt (>) is on the right-middle area of the panel
-    input_x = int(screen_w * 0.85)   # right side
-    input_y = screen_h - 600         # up 600 from bottom
-
-    logger.debug(f"点击 Console 输入框 ({input_x}, {input_y})")
+    logger.debug(f"聚焦 Console 输入框 ({input_x}, {input_y})")
     pyautogui.click(input_x, input_y)
     time.sleep(0.5)
 
-    logger.debug("Console 输入框已聚焦")
 
+def _paste_and_execute(js_code: str):
+    """Copy JS to clipboard and paste into the focused console input.
 
-def _click_in_console_and_type(js_code: str):
-    """Type JS code into the focused console input and execute.
+    This avoids all keyboard layout / IME issues from typing characters
+    one by one.
 
     Args:
         js_code: JavaScript code to execute.
     """
-    # Type the JS code with small delay between characters for reliability
-    pyautogui.write(js_code, interval=0.05)
+    # Copy to clipboard
+    pyperclip.copy(js_code)
+    time.sleep(0.2)
+
+    # Paste into console (Ctrl+V)
+    pyautogui.hotkey("ctrl", "v")
     time.sleep(0.3)
+
     # Execute
     pyautogui.press("enter")
     time.sleep(0.8)
-    logger.debug(f"已执行 JS: {js_code[:60]}{'...' if len(js_code) > 60 else ''}")
+
+    logger.debug(f"已粘贴并执行 JS ({len(js_code)} chars)")
 
 
 def inject_js(js_code: str) -> None:
     """Inject and execute JavaScript via DevTools console.
 
-    Opens DevTools, focuses the Console panel, types JS, and executes it.
+    Opens DevTools, focuses the Console input, pastes JS code
+    from clipboard, and executes it.
 
     Args:
         js_code: JavaScript code to execute.
     """
     ensure_devtools(open_it=True)
 
-    # Focus the Console panel and its input
+    # Switch to English IME to avoid interference
+    _switch_to_english_ime()
+
+    # Focus the Console input area
     _focus_console()
 
-    # Type and execute the JS code
-    _click_in_console_and_type(js_code)
+    # Paste and execute
+    _paste_and_execute(js_code)
 
 
 def execute_video_js(js_code: str, fallback_action: callable = None) -> bool:
-    """Execute JS on a video element with fallback.
-
-    Args:
-        js_code: JavaScript to execute.
-        fallback_action: Callable if injection fails.
-
-    Returns:
-        True if injection was attempted.
-    """
+    """Execute JS on a video element with fallback."""
     try:
         inject_js(js_code)
         time.sleep(1.0)
@@ -141,30 +142,38 @@ def execute_video_js(js_code: str, fallback_action: callable = None) -> bool:
         return False
 
 
-def _video_selector_js() -> str:
-    """JavaScript snippet to find a video element with multiple selectors.
+def _video_find_js() -> str:
+    """JS snippet to find a video element, including inside iframes.
 
     Returns:
-        JS code string that assigns the found video element to variable 'v'.
+        JS expression that evaluates to a video element or null.
     """
     return (
+        "(function(){"
         "var v=document.querySelector('video')"
         "||document.querySelector('video[class*=video]')"
         "||document.querySelector('.vjs-tech');"
+        "if(!v){"
+        "var f=document.querySelectorAll('iframe');"
+        "for(var i=0;i<f.length;i++){"
+        "try{v=f[i].contentDocument.querySelector('video');if(v)break}catch(e){}"
+        "}"
+        "}"
+        "return v;"
+        "})()"
     )
 
 
 def set_video_speed(speed: float = 2.0) -> None:
     """Set video playback speed via DevTools console injection.
 
-    Args:
-        speed: Target playback speed (e.g., 2.0 for 2x).
+    Tries main document first, then searches inside iframes.
     """
     js = (
         f"(function(){{"
-        f"  {_video_selector_js()}"
-        f"  if(v){{v.playbackRate={speed};console.log('Speed:'+v.playbackRate);}}"
-        f"  else{{console.log('No video element');}}"
+        f"var v={_video_find_js()};"
+        f"if(v){{v.playbackRate={speed};console.log('Speed:'+v.playbackRate);}}"
+        f"else{{console.log('No video element');}}"
         f"}})()"
     )
     inject_js(js)
@@ -174,25 +183,28 @@ def mute_video() -> None:
     """Mute video via DevTools console injection."""
     js = (
         "(function(){"
-        f"  {_video_selector_js()}"
-        "  if(v){v.muted=true;console.log('Muted');}"
-        "  else{console.log('No video for mute');}"
+        f"var v={_video_find_js()};"
+        "if(v){v.muted=true;console.log('Muted');}"
+        "else{console.log('No video for mute');}"
         "})()"
     )
     inject_js(js)
 
 
 def click_play_button_if_paused() -> bool:
-    """Call video.play() via DevTools if the video is paused.
+    """Call video.play() via DevTools if video exists and is paused.
+
+    Searches main document and iframes for the video element.
 
     Returns:
-        True if the play command was sent.
+        True if play command was sent.
     """
     js = (
         "(function(){"
-        f"  {_video_selector_js()}"
-        "  if(v&&v.paused){v.play();console.log('Play');return true;}"
-        "  return false;"
+        f"var v={_video_find_js()};"
+        "if(v&&v.paused){v.play();console.log('Play');return true;}"
+        "console.log('No paused video found');"
+        "return false;"
         "})()"
     )
     inject_js(js)
