@@ -68,7 +68,7 @@ def _focus_console():
     # --- Step 1: Click the Console tab ---
     # Console tab is typically the 2nd tab after "Elements"
     # Position: ~150-250px from left edge, at the top of DevTools panel
-    console_tab_x = 200
+    console_tab_x = int(screen_w * 0.1)
     console_tab_y = tab_bar_y
 
     logger.debug(f"点击 Console 标签页 ({console_tab_x}, {console_tab_y})")
@@ -76,9 +76,9 @@ def _focus_console():
     time.sleep(1.0)  # wait for panel switch
 
     # --- Step 2: Click the console input area ---
-    # Console input is on the right-middle side of the DevTools panel
+    # Console input prompt (>) is on the right-middle area of the panel
     input_x = int(screen_w * 0.85)   # right side
-    input_y = screen_h - 50          # near bottom of screen
+    input_y = screen_h - 600         # up 600 from bottom
 
     logger.debug(f"点击 Console 输入框 ({input_x}, {input_y})")
     pyautogui.click(input_x, input_y)
