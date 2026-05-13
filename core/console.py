@@ -76,9 +76,9 @@ def _focus_console():
     time.sleep(1.0)  # wait for panel switch
 
     # --- Step 2: Click the console input area ---
-    # After switching to Console panel, the input area is at the bottom of panel
-    input_y = screen_h - 50    # near bottom of screen
-    input_x = screen_w // 2
+    # Console input is on the right-middle side of the DevTools panel
+    input_x = int(screen_w * 0.85)   # right side
+    input_y = screen_h - 50          # near bottom of screen
 
     logger.debug(f"点击 Console 输入框 ({input_x}, {input_y})")
     pyautogui.click(input_x, input_y)
