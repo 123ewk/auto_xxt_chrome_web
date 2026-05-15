@@ -642,21 +642,21 @@ def navigate_next_js() -> str:
         "}"
         # Check popup first
         "var popup=_findPopupInfo();"
-        # If popup has a "下一节" button → multi-method click + direct PCount call
+        # If popup has a "下一节" button → multi-method click + eval full onclick
         "if(popup.btn&&_popupClickCount<_popupClickMax){"
         "_popupClickCount++;"
         "window.__autoNavFailedReason=null;"
-        # Method 1: plain .click()
-        "try{popup.btn.click();}catch(e){}"
-        # Method 2: dispatch real MouseEvent (works where .click() doesn't on <a>)
-        "try{popup.btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}"
-        # Method 3: directly extract and eval PCount.next() from onclick attr
+        # Method 1: eval 完整 onclick（含 closeDeleteWindow + PCount.next）
         "try{"
-        "if(popup.onclick&&popup.onclick.indexOf('PCount.')!==-1){"
-        "var m=popup.onclick.match(/PCount\\.\\w+\\([^)]*\\)/);"
-        "if(m)eval(m[0]);"
+        "if(popup.onclick&&popup.onclick.length>0){"
+        "eval(popup.onclick);"
+        "console.log('JS_NAV: eval full onclick → '+popup.onclick.substring(0,60));"
         "}"
-        "}catch(e){}"
+        "}catch(e){console.log('JS_NAV: eval onclick failed: '+e);}"
+        # Method 2: plain .click()
+        "try{popup.btn.click();}catch(e){}"
+        # Method 3: dispatch real MouseEvent (works where .click() doesn't on <a>)
+        "try{popup.btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}"
         "console.log('JS_NAV: clicked popup next (attempt '+_popupClickCount+'/'+_popupClickMax+')');"
         "setTimeout(_poll,800);return;"
         "}"

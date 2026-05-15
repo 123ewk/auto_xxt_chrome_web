@@ -25,6 +25,29 @@ from pathlib import Path
 # Ensure project root is in path
 sys.path.insert(0, str(Path(__file__).parent))
 
+
+def _load_dotenv():
+    """从项目根目录的 .env 文件加载环境变量（不覆盖已存在的变量）。"""
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            # 不覆盖已存在的环境变量（命令行设置的优先级更高）
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv()
+
 from loguru import logger
 
 import config
