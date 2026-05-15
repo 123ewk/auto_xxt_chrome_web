@@ -1,17 +1,39 @@
-"""OCR utilities: screen capture → text recognition → coordinate location."""
+"""OCR utilities: screen capture → text recognition → coordinate location.
 
+Most OCR functions are no longer used in the Playwright refactor.
+Only ocr_status() is called (for preflight check), and it uses
+subprocess directly without pytesseract.
+"""
+
+import subprocess
 import time
 from pathlib import Path
 from typing import Sequence
 
-import pyautogui
-import pytesseract
 from loguru import logger
 
 import config
 
-# Set tesseract executable path
-pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
+# Lazy-init: only import heavy deps when OCR functions are actually called
+_pyautogui = None
+_pytesseract = None
+
+
+def _get_pyautogui():
+    global _pyautogui
+    if _pyautogui is None:
+        import pyautogui
+        _pyautogui = pyautogui
+    return _pyautogui
+
+
+def _get_pytesseract():
+    global _pytesseract
+    if _pytesseract is None:
+        import pytesseract
+        pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_CMD
+        _pytesseract = pytesseract
+    return _pytesseract
 
 
 def capture_and_ocr(
@@ -28,13 +50,15 @@ def capture_and_ocr(
         List of dicts: [{"text": str, "conf": float, "x": int, "y": int, "w": int, "h": int}, ...]
         Empty list if no text found.
     """
-    screenshot = pyautogui.screenshot(region=region)
+    pa = _get_pyautogui()
+    pt = _get_pytesseract()
+    screenshot = pa.screenshot(region=region)
 
     try:
-        data = pytesseract.image_to_data(
+        data = pt.image_to_data(
             screenshot,
             lang=lang,
-            output_type=pytesseract.Output.DICT,
+            output_type=pt.Output.DICT,
         )
     except Exception as e:
         logger.error(f"OCR failed: {e}")
@@ -156,7 +180,7 @@ def find_all_instances(
 
 
 def click_text(
-    target: str,
+    target: str | Sequence[str],
     region: tuple[int, int, int, int] | None = None,
     exact: bool = False,
     min_conf: float = 0.6,
@@ -166,7 +190,7 @@ def click_text(
     """Find text on screen and click its center.
 
     Args:
-        target: Text to find and click.
+        target: Text to find and click, or list of texts (tries each).
         region: Optional search region.
         exact: Exact match or substring.
         min_conf: Minimum confidence.
@@ -176,22 +200,26 @@ def click_text(
     Returns:
         True if text was found and clicked.
     """
+    targets = [target] if isinstance(target, str) else list(target) if target else []
+
     for attempt in range(1, retries + 1):
-        result = find_text(target, region=region, exact=exact, min_conf=min_conf)
-        if result:
-            cx = result["x"] + result["w"] // 2
-            cy = result["y"] + result["h"] // 2
-            pyautogui.moveTo(cx, cy, duration=0.2)
-            time.sleep(0.2)
-            pyautogui.click()
-            logger.info(f"Clicked '{target}' at ({cx}, {cy})")
-            return True
+        for t in targets:
+            result = find_text(t, region=region, exact=exact, min_conf=min_conf)
+            if result:
+                pa = _get_pyautogui()
+                cx = result["x"] + result["w"] // 2
+                cy = result["y"] + result["h"] // 2
+                pa.moveTo(cx, cy, duration=0.2)
+                time.sleep(0.2)
+                pa.click()
+                logger.info(f"Clicked '{result['text']}' at ({cx}, {cy})")
+                return True
 
         if attempt < retries:
-            logger.debug(f"Attempt {attempt}/{retries}: '{target}' not found, retrying in {retry_interval}s")
+            logger.debug(f"Attempt {attempt}/{retries}: targets={targets} not found, retrying in {retry_interval}s")
             time.sleep(retry_interval)
 
-    logger.warning(f"Failed to click '{target}' after {retries} attempts")
+    logger.warning(f"Failed to click {targets} after {retries} attempts")
     return False
 
 
@@ -231,7 +259,6 @@ def ocr_status() -> dict:
     Returns:
         Dict with keys: "available" (bool), "tesseract_path" (str), "languages" (list).
     """
-    import subprocess
 
     result = {
         "available": False,
