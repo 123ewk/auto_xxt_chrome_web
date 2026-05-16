@@ -376,17 +376,23 @@ def quiz_handler_js() -> str:
         "for(var i=0;i<candidates.length;i++){"
         "var c=candidates[i];var el=c.el;var fp=c.fp;"
         "window.__dismissedFp[fp]=now;"
-        # Skip navigation-related popups: if this popup has "下一节" or "去学习"
-        # buttons, it's a navigation confirmation dialog — leave it to
-        # navigate_next_js() which is specifically designed for this flow.
-        # Clicking them from _dismiss just closes the popup without navigating.
-        "var _btns=el.querySelectorAll('a,button');"
+        # Skip navigation-related popups: if this element (or any ancestor up to
+        # 6 levels) has "下一节" or "去学习" buttons, it's a navigation dialog.
+        # Do NOT dismiss it — leave it for navigate_next_js() / click_popup_next_chapter().
+        # Previously we only checked el.querySelectorAll, which missed the case
+        # where nav buttons are in a sibling (e.g. popBottom vs popHead).
         "var _hasNavBtn=false;"
+        "var _check=el;"
+        "for(var _lvl=0;_lvl<6&&_check&&_check!==document.body;_lvl++){"
+        "var _btns=_check.querySelectorAll('a,button');"
         "for(var _j=0;_j<_btns.length;_j++){"
         "var _t=(_btns[_j].textContent||'').trim();"
         "if(_t.indexOf('下一节')!==-1||_t.indexOf('去学习')!==-1){_hasNavBtn=true;break;}"
         "}"
-        "if(_hasNavBtn){console.log('QUIZ_HANDLER: skipping nav popup');continue;}"
+        "if(_hasNavBtn)break;"
+        "_check=_check.parentElement;"
+        "}"
+        "if(_hasNavBtn){console.log('QUIZ_HANDLER: skipping nav popup (ancestor has nav btn)');continue;}"
         # Normal dismiss: close buttons first
         "var closeBtn=el.querySelector('.popClose,.close,.btn-close,[class*=close]');"
         "if(closeBtn&&closeBtn.offsetWidth>0){closeBtn.click();console.log('QUIZ_HANDLER: dismissed via close');return true;}"
@@ -590,10 +596,24 @@ def navigate_next_js() -> str:
         "window.__autoNavFailedReason=null;"
         "try{sessionStorage.removeItem('__autoNavDone');}catch(e){}"
         "var _urlBefore=location.href;"
+        # Record iframe structure — 学习通 navigation swaps iframes without
+        # changing top-frame URL, so we must track iframe changes too.
+        "var _iframesBefore=document.querySelectorAll('iframe').length;"
+        "var _iframeSrcsBefore='';"
+        "var _fs=document.querySelectorAll('iframe');"
+        "for(var _fi=0;_fi<_fs.length;_fi++)_iframeSrcsBefore+=_fs[_fi].src+'|';"
         "var _clicked=false;"
         "var _popupClickCount=0;"
         "var _popupClickMax=6;"
         "var _startTime=Date.now();"
+        # Helper: did the page structure change?
+        "function _pageChanged(){"
+        "var _fs2=document.querySelectorAll('iframe');"
+        "if(_fs2.length!==_iframesBefore)return true;"
+        "var _srcs='';"
+        "for(var _fi2=0;_fi2<_fs2.length;_fi2++)_srcs+=_fs2[_fi2].src+'|';"
+        "return _srcs!==_iframeSrcsBefore;"
+        "}"
         # 滚动 PPT 内容到底部
         # 只在 panView frame 内滚动 documentElement
         # 在主 frame 中 documentElement 是主页面，不能滚动它！
@@ -679,10 +699,10 @@ def navigate_next_js() -> str:
         # Poll loop
         "function _poll(){"
         "var elapsed=Date.now()-_startTime;"
-        # Success: URL changed
-        "if(location.href!==_urlBefore){"
+        # Success: URL changed OR iframe structure changed
+        "if(location.href!==_urlBefore||_pageChanged()){"
         "window.__autoNavDone=true;try{sessionStorage.setItem('__autoNavDone','1');}catch(e){}"
-        "console.log('JS_NAV: success (URL changed)');return;"
+        "console.log('JS_NAV: success (URL or iframe changed)');return;"
         "}"
         # Timeout
         "if(elapsed>15000){"

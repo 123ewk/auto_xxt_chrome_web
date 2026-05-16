@@ -145,87 +145,125 @@ def click_popup_next_chapter(page: Page) -> bool:
     # 策略1（最可靠）：JS 层提取 onclick 中的 PCount.next() 并直接调用
     js_extract_pcount = (
         "(function(){"
-        "var all=document.querySelectorAll('.popDiv');"
+        # Search ALL popup-like elements (not just .popDiv — class may vary)
+        "var all=document.querySelectorAll('.popDiv,div,section,aside,form');"
+        "var _results=[];"  # diagnostic build-up
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
-        # 注意：position:fixed 元素的 offsetParent 是 null，不能用 offsetParent 判断可见性
-        # 改用 getComputedStyle 检查
         "var cs=window.getComputedStyle(el);"
         "if(!cs||cs.display==='none'||cs.visibility==='hidden')continue;"
+        # Popup detection: position:fixed/absolute OR high z-index
+        "var zi=cs.zIndex!=='auto'?parseInt(cs.zIndex):0;"
+        "var isPopup=cs.position==='fixed'||cs.position==='absolute'||zi>50;"
+        # Also accept elements with "任务点未完" text (task-unfinished popup)
+        "var txt=(el.textContent||'');"
+        "var hasTaskTxt=txt.indexOf('任务点未完')!==-1;"
+        "if(!isPopup&&!hasTaskTxt)continue;"
+        # Find .nextChapter button
         "var nc=el.querySelector('.nextChapter');"
-        "if(!nc)continue;"
-        # 从 onclick 属性提取 PCount.next(...) 调用
-        "var oc=nc.getAttribute('onclick')||'';"
-        "if(oc.indexOf('PCount.next')!==-1){"
-        "try{"
-        # 直接 eval 整个 onclick（含 closeDeleteWindow + PCount.next）
-        "eval(oc);"
-        "console.log('POPUP_CLICK: eval onclick → '+oc.substring(0,80));"
-        "return true;"
-        "}catch(e1){"
-        # eval 失败则单独提取 PCount.next 调用
-        "try{"
-        "var m=oc.match(/PCount\\.next\\([^)]*\\)/);"
-        "if(m){eval(m[0]);console.log('POPUP_CLICK: eval PCount.next → '+m[0]);return true;}"
-        "}catch(e2){console.log('POPUP_CLICK: PCount.next failed: '+e2);}"
-        "}"
-        "}"
-        # onclick 中没有 PCount.next，尝试文本匹配「下一节」
+        # Also search for links/buttons with "下一节" text
+        "if(!nc||nc.offsetWidth===0){"
         "var links=el.querySelectorAll('a,button');"
         "for(var j=0;j<links.length;j++){"
-        "var t=(links[j].textContent||'').trim();"
-        "if(t==='下一节'){"
-        "try{links[j].click();return true;}catch(e){}"
+        "var lt=(links[j].textContent||'').trim();"
+        "if(lt.indexOf('下一节')!==-1&&links[j].offsetWidth>0){nc=links[j];break;}"
         "}"
         "}"
+        "if(!nc||nc.offsetWidth===0){"
+        "_results.push('popup['+i+']: no visible nextChapter, txt='+txt.substring(0,60));"
+        "continue;"
         "}"
-        "return false;"
+        # Found a candidate — try PCount.next first
+        "var oc=nc.getAttribute('onclick')||'';"
+        "_results.push('popup['+i+']: .nextChapter found, onclick='+oc.substring(0,80));"
+        "if(oc.indexOf('PCount.next')!==-1){"
+        "try{"
+        "eval(oc);"
+        "console.log('POPUP_CLICK: eval onclick OK');"
+        "return true;"
+        "}catch(e1){"
+        "try{"
+        "var m=oc.match(/PCount\\.next\\([^)]*\\)/);"
+        "if(m){eval(m[0]);console.log('POPUP_CLICK: eval PCount.next OK');return true;}"
+        "}catch(e2){console.log('POPUP_CLICK: eval failed: '+e2);}"
+        "}"
+        "}"
+        # No PCount.next — try .click() + MouseEvent as fallback
+        "try{nc.click();console.log('POPUP_CLICK: .click()');return true;}catch(e){}"
+        "try{"
+        "nc.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));"
+        "console.log('POPUP_CLICK: MouseEvent');"
+        "return true;"
+        "}catch(e){}"
+        "}"
+        # No candidate found — log diagnostic and return it for Python-side logging
+        "var diag='';"
+        "if(_results.length===0){"
+        "diag='POPUP_CLICK: no popup element found';"
+        "}else{"
+        "diag='POPUP_DIAG: '+_results.join(' | ');"
+        "}"
+        "console.log(diag);"
+        # Return the diagnostic string so Python can log it
+        "return diag;"
         "})()"
     )
 
     url_before = page.url
+    frame_urls_before = {f.url for f in page.frames}
 
-    # --- Phase A: top frame first (popups are always in the top frame) ---
+    # --- Phase A: top frame first (popups are almost always in the top frame) ---
     nav_exception = False
     try:
         result = page.evaluate(js_extract_pcount)
-        if result:
+        if result is True:
             logger.info("弹窗「下一节」点击成功（PCount.next 调用）")
             return True
-    except Exception:
+        if isinstance(result, str) and result:
+            logger.warning(f"弹窗点击诊断(top): {result}")
+        elif result is False:
+            logger.warning("弹窗点击诊断(top): 未找到含'下一节'按钮的弹窗元素")
+    except Exception as e:
         # PCount.next() 触发页面导航会销毁执行上下文，导致 evaluate 抛异常。
-        # 这是成功的标志，不是失败！给导航 0.5s 启动时间再检查 URL。
+        # 这是成功的标志，不是失败！
+        logger.info(f"弹窗点击异常（预期内，导航可能已触发）: {e}")
         nav_exception = True
 
     if nav_exception:
         time.sleep(0.5)
         try:
-            # 等待导航开始（domcontentloaded 是最早的可靠信号）
             page.wait_for_load_state("domcontentloaded", timeout=5000)
         except Exception:
             pass
         try:
-            if page.url != url_before:
-                logger.info("弹窗「下一节」点击成功（PCount.next 触发导航，执行上下文已销毁）")
+            new_frames = {f.url for f in page.frames}
+            old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
+            new_sig = {u for u in new_frames if u and u != 'about:blank'}
+            if old_sig != new_sig or page.url != url_before:
+                logger.info("弹窗「下一节」点击成功（PCount.next 触发导航）")
                 return True
         except Exception:
             pass
 
-    # --- Phase B: iframe fallback (only if top frame didn't trigger navigation) ---
+    # --- Phase B: try ALL frames (popup might be in an iframe) ---
     for frame in page.frames:
         if frame == page:
-            continue  # already tried top frame
+            continue
         try:
             result = frame.evaluate(js_extract_pcount)
-            if result:
-                logger.info("弹窗「下一节」点击成功（iframe PCount.next 调用）")
+            if result is True:
+                logger.info(f"弹窗「下一节」点击成功（iframe: {frame.url[:60]}）")
                 return True
+            if isinstance(result, str) and result:
+                logger.warning(f"弹窗点击诊断({frame.url[:40]}): {result}")
         except Exception:
-            # Same pattern: context destruction = success
             time.sleep(0.3)
             try:
-                if page.url != url_before:
-                    logger.info("弹窗「下一节」点击成功（iframe PCount.next 触发导航）")
+                new_frames = {f.url for f in page.frames}
+                old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
+                new_sig = {u for u in new_frames if u and u != 'about:blank'}
+                if old_sig != new_sig:
+                    logger.info(f"弹窗「下一节」点击成功（iframe 异常，frame 已变化）")
                     return True
             except Exception:
                 pass
@@ -284,6 +322,7 @@ def _js_click_popup_next(page: Page) -> bool:
     )
 
     url_before = page.url
+    frame_urls_before = {f.url for f in page.frames}
     for frame in page.frames:
         try:
             result = frame.evaluate(js)
@@ -291,9 +330,10 @@ def _js_click_popup_next(page: Page) -> bool:
                 logger.info("JS 层弹窗点击成功")
                 return True
         except Exception:
-            # PCount.next() 触发导航会销毁执行上下文，检查 URL 变化
+            # PCount.next() triggers navigation → context destroyed → check frame structure
             try:
-                if page.url != url_before:
+                new_frames = {f.url for f in page.frames}
+                if page.url != url_before or new_frames != frame_urls_before:
                     logger.info("JS 层弹窗点击成功（导航触发，执行上下文已销毁）")
                     return True
             except Exception:
@@ -336,6 +376,7 @@ def try_click_next_section(page: Page) -> bool:
         True if navigation was triggered successfully.
     """
     url_before = page.url
+    frame_urls_before = {f.url for f in page.frames}
 
     # --- Step 0: 检测并处理弹窗 ---
     popup = detect_popup(page)
@@ -344,7 +385,11 @@ def try_click_next_section(page: Page) -> bool:
         if popup.get("hasNextChapter"):
             if click_popup_next_chapter(page):
                 time.sleep(2)
-                if page.url != url_before:
+                # Check frame structure (not just page.url — 学习通 swaps iframes)
+                new_frames = {f.url for f in page.frames}
+                old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
+                new_sig = {u for u in new_frames if u and u != 'about:blank'}
+                if page.url != url_before or old_sig != new_sig:
                     logger.info("弹窗「下一节」点击后页面已跳转")
                     return True
                 logger.info("弹窗点击后页面未跳转，继续常规导航")
@@ -352,13 +397,17 @@ def try_click_next_section(page: Page) -> bool:
     # --- Helper: call navigate_next_js in a frame and wait for result ---
     def _try_frame(frame, timeout=45000) -> bool:
         url_before_try = page.url
+        frames_before = {f.url for f in page.frames}
         try:
             frame.evaluate(navigate_next_js())
             frame.wait_for_function(check_nav_marker_js(), timeout=timeout)
         except Exception:
+            # Context destroyed — check if navigation happened
+            time.sleep(0.5)
             try:
-                if page.url != url_before_try:
-                    logger.info("DOM 导航成功（URL已变化，执行上下文已销毁）")
+                new_frames = {f.url for f in page.frames}
+                if page.url != url_before_try or new_frames != frames_before:
+                    logger.info("DOM 导航成功（frame/URL 已变化，执行上下文已销毁）")
                     try:
                         page.wait_for_load_state("domcontentloaded", timeout=5000)
                     except Exception:
@@ -382,19 +431,31 @@ def try_click_next_section(page: Page) -> bool:
         if is_done:
             return True
 
+        # Marker not set — check if frame structure changed anyway
+        try:
+            new_frames = {f.url for f in page.frames}
+            if new_frames != frames_before:
+                logger.info("DOM 导航成功（frame 结构已变化，marker 未设但页面已变）")
+                return True
+        except Exception:
+            pass
+
         return False
 
     # 1. Main frame
     logger.info("DOM 导航：查找下一节按钮（主 frame）...")
     if _try_frame(page, timeout=15000):
-        if page.url != url_before:
+        new_frames = {f.url for f in page.frames}
+        old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
+        new_sig = {u for u in new_frames if u and u != 'about:blank'}
+        if page.url != url_before or old_sig != new_sig:
             logger.info("DOM 导航成功（主 frame）")
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=5000)
             except Exception:
                 time.sleep(1)
             return True
-        logger.info("主 frame 导航标记成功，URL 未变，检查 iframe...")
+        logger.info("主 frame 导航标记成功，frame/URL 未变，检查 iframe...")
 
     # 2. Iframe fallback (e.g. iframe#panView on image/doc pages)
     logger.info("主 frame 导航未成功，尝试 iframe...")
@@ -412,7 +473,10 @@ def try_click_next_section(page: Page) -> bool:
         logger.info(f"  iframe 尝试: {url[:80]}")
 
         if _try_frame(frame, timeout=15000):
-            if page.url != url_before:
+            new_frames = {f.url for f in page.frames}
+            old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
+            new_sig = {u for u in new_frames if u and u != 'about:blank'}
+            if page.url != url_before or old_sig != new_sig:
                 logger.info(f"DOM 导航成功（iframe）")
                 try:
                     page.wait_for_load_state("domcontentloaded", timeout=5000)
@@ -420,7 +484,7 @@ def try_click_next_section(page: Page) -> bool:
                     time.sleep(1)
                 return True
             else:
-                logger.info("iframe 导航标记成功但 URL 未变")
+                logger.info("iframe 导航标记成功但 frame/URL 未变")
         else:
             logger.info(f"  iframe 未找到按钮: {url[:60]}")
 
@@ -430,7 +494,10 @@ def try_click_next_section(page: Page) -> bool:
         logger.info("导航后检测到弹窗，重试点击「下一节」...")
         if click_popup_next_chapter(page):
             time.sleep(2)
-            if page.url != url_before:
+            new_frames = {f.url for f in page.frames}
+            old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
+            new_sig = {u for u in new_frames if u and u != 'about:blank'}
+            if page.url != url_before or old_sig != new_sig:
                 logger.info("弹窗重试点击后页面已跳转")
                 return True
 
