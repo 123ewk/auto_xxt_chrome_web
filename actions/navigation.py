@@ -114,114 +114,121 @@ def scroll_ppt_container(page: Page) -> bool:
 
 
 def click_popup_next_chapter(page: Page) -> bool:
-    """使用 Playwright 原生 locator API 点击弹窗内「下一节」按钮。
+    """点击弹窗内「下一节」按钮，导航到下一节。
 
-    真实弹窗结构（通过诊断确认）：
+    真实弹窗结构（通过深度诊断确认）：
       弹窗在顶层 frame（studentstudy 页面），不在 iframe 内
-      页面有 10 个 .popDiv，只有含 .nextChapter 的那个才是目标弹窗
+      页面有 10 个 .popDiv，只有 .popDiv[3] 含 .nextChapter 按钮
       按钮标签: <a>，文本: "下一节"
       onclick: closeDeleteWindow();PCount.next('3','1021706543','254631881','140506502','')
-      弹窗文本: "当前章节还有任务点未完"（注意是"未完"不是"未完成"）
 
-    点击策略（按优先级）：
-    1. Playwright locator 精确匹配含 .nextChapter 的 .popDiv
-    2. Playwright locator 匹配含「下一节」文本的 .popDiv
-    3. JS 层提取 onclick 并 eval 完整执行（含 closeDeleteWindow）
+    深度诊断结果：
+      closeDeleteWindow() → 不关闭此弹窗（.popDiv 数量不变）
+      PCount.next()      → ✅ 成功导航到下一节
+      Playwright click   → 被 maskDiv(z=999) 遮挡，force=True 也无法触发 onclick
+
+    因此策略改为：直接从 onclick 属性提取 PCount.next() 调用并 eval 执行。
 
     Args:
         page: Playwright Page 对象。
 
     Returns:
-        True 如果成功点击了弹窗中的下一节按钮。
+        True 如果成功执行了 PCount.next() 导航。
     """
-    # 弹窗在顶层 frame，优先在顶层 frame 查找
+    # 策略1（最可靠）：JS 层提取 onclick 中的 PCount.next() 并直接调用
+    js_extract_pcount = (
+        "(function(){"
+        "var all=document.querySelectorAll('.popDiv');"
+        "for(var i=0;i<all.length;i++){"
+        "var el=all[i];"
+        "if(el.offsetParent===null)continue;"
+        "var nc=el.querySelector('.nextChapter');"
+        "if(!nc)continue;"
+        # 从 onclick 属性提取 PCount.next(...) 调用
+        "var oc=nc.getAttribute('onclick')||'';"
+        "if(oc.indexOf('PCount.next')!==-1){"
+        "try{"
+        # 直接 eval 整个 onclick（含 closeDeleteWindow + PCount.next）
+        "eval(oc);"
+        "console.log('POPUP_CLICK: eval onclick → '+oc.substring(0,80));"
+        "return true;"
+        "}catch(e1){"
+        # eval 失败则单独提取 PCount.next 调用
+        "try{"
+        "var m=oc.match(/PCount\\.next\\([^)]*\\)/);"
+        "if(m){eval(m[0]);console.log('POPUP_CLICK: eval PCount.next → '+m[0]);return true;}"
+        "}catch(e2){console.log('POPUP_CLICK: PCount.next failed: '+e2);}"
+        "}"
+        "}"
+        # onclick 中没有 PCount.next，尝试文本匹配「下一节」
+        "var links=el.querySelectorAll('a,button');"
+        "for(var j=0;j<links.length;j++){"
+        "var t=(links[j].textContent||'').trim();"
+        "if(t==='下一节'){"
+        "try{links[j].click();return true;}catch(e){}"
+        "}"
+        "}"
+        "}"
+        "return false;"
+        "})()"
+    )
+
+    # 弹窗在顶层 frame，优先在顶层 frame 执行
     for frame in page.frames:
         try:
-            # 方式1：精确匹配含 .nextChapter 的 .popDiv（最可靠）
+            result = frame.evaluate(js_extract_pcount)
+            if result:
+                logger.info("弹窗「下一节」点击成功（PCount.next 调用）")
+                return True
+        except Exception:
+            pass
+
+    # 策略2：Playwright locator 兜底（mask 层可能不总是存在）
+    for frame in page.frames:
+        try:
             btn = frame.locator(".popDiv:has(.nextChapter) .nextChapter")
             if btn.count() > 0:
                 btn.first.click(force=True, timeout=3000)
-                logger.info("弹窗「下一节」按钮点击成功（:has(.nextChapter) locator）")
+                logger.info("弹窗「下一节」按钮点击成功（Playwright locator）")
                 return True
-        except Exception as e:
-            logger.debug(f":has(.nextChapter) locator 点击失败: {e}")
+        except Exception:
+            pass
 
-        try:
-            # 方式2：匹配含「下一节」文本链接的 .popDiv
-            btn = frame.locator('.popDiv:has(a:has-text("下一节")) >> a:has-text("下一节")')
-            if btn.count() > 0:
-                btn.first.click(force=True, timeout=3000)
-                logger.info("弹窗「下一节」按钮点击成功（a:has-text locator）")
-                return True
-        except Exception as e:
-            logger.debug(f"a:has-text locator 点击失败: {e}")
-
-        try:
-            # 方式3：宽泛匹配 .popDiv 内所有 .nextChapter
-            btn = frame.locator(".popDiv a.nextChapter, .popDiv button.nextChapter")
-            if btn.count() > 0:
-                btn.first.click(force=True, timeout=3000)
-                logger.info("弹窗「下一节」按钮点击成功（a/button.nextChapter）")
-                return True
-        except Exception as e:
-            logger.debug(f"a/button.nextChapter locator 点击失败: {e}")
-
-    # Playwright locator 全部失败，尝试 JS 层兜底
-    logger.info("Playwright locator 均未命中，尝试 JS 层弹窗点击...")
-    return _js_click_popup_next(page)
+    logger.warning("弹窗「下一节」点击失败：所有方式均未成功")
+    return False
 
 
 def _js_click_popup_next(page: Page) -> bool:
     """JS 层弹窗按钮点击兜底方案。
 
-    真实 onclick: closeDeleteWindow();PCount.next('3','1021706543','254631881','140506502','')
-    必须先执行 closeDeleteWindow() 关闭弹窗，再执行 PCount.next() 跳转。
-    弹窗文本: "当前章节还有任务点未完"（注意是"未完"不是"未完成"）
+    深度诊断确认：
+      closeDeleteWindow() 不关闭此弹窗，但 PCount.next() 能导航到下一节。
+      因此优先提取并执行 PCount.next() 调用。
 
     Args:
         page: Playwright Page 对象。
 
     Returns:
-        True 如果成功执行了点击逻辑。
+        True 如果成功执行了 PCount.next() 导航。
     """
     js = (
         "(function(){"
-        "var all=document.querySelectorAll('.popDiv,div');"
+        "var all=document.querySelectorAll('.popDiv');"
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
         "if(el.offsetParent===null)continue;"
-        "var txt=(el.textContent||'');"
-        # 匹配"任务点未完"（涵盖"未完"和"未完成"两种情况）
-        "if(txt.indexOf('任务点未完')===-1)continue;"
-        "try{"
-        "var cs=window.getComputedStyle(el);if(!cs)continue;"
-        "var isPopup=cs.position==='fixed'||cs.position==='absolute'||"
-        "(cs.zIndex!=='auto'&&parseInt(cs.zIndex)>50);"
-        "if(!isPopup)continue;"
-        # 查找 .nextChapter 按钮
         "var nc=el.querySelector('.nextChapter');"
-        "if(!nc){"
-        "var links=el.querySelectorAll('a,button');"
-        "for(var j=0;j<links.length;j++){"
-        "if((links[j].textContent||'').trim().indexOf('下一节')!==-1){nc=links[j];break;}"
-        "}"
-        "}"
-        "if(!nc)return false;"
-        # 方法1：提取完整 onclick 并 eval 执行（含 closeDeleteWindow）
-        "try{"
+        "if(!nc)continue;"
         "var oc=nc.getAttribute('onclick')||'';"
-        "if(oc.length>0){"
-        "eval(oc);"
-        "console.log('POPUP_CLICK: eval onclick → '+oc.substring(0,60));"
-        "return true;"
-        "}"
-        "}catch(e){console.log('POPUP_CLICK: eval onclick failed: '+e);}"
-        # 方法2：dispatchEvent MouseEvent
-        "try{nc.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}"
-        # 方法3：直接 .click()
-        "try{nc.click();}catch(e){}"
-        "return true;"
+        # 优先 eval 整个 onclick
+        "try{eval(oc);return true;}catch(e){}"
+        # 失败则单独提取 PCount.next
+        "try{"
+        "var m=oc.match(/PCount\\.next\\([^)]*\\)/);"
+        "if(m){eval(m[0]);return true;}"
         "}catch(e){}"
+        # 最后尝试 .click()
+        "try{nc.click();return true;}catch(e){}"
         "}"
         "return false;"
         "})()"
