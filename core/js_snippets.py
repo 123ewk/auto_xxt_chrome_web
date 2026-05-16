@@ -590,14 +590,15 @@ def navigate_next_js() -> str:
         "var best=null,bestZ=0,hasTaskUnfinished=false;"
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
-        "if(el.offsetParent===null)continue;"
+        # position:fixed 元素的 offsetParent 是 null，改用 getComputedStyle
+        "var cs=window.getComputedStyle(el);"
+        "if(!cs||cs.display==='none'||cs.visibility==='hidden')continue;"
         "var rect=el.getBoundingClientRect();"
         "if(rect.left<5||rect.right>window.innerWidth-5)continue;"
         "var txt=(el.textContent||'');"
         # Only care about popups that mention unfinished tasks
         "if(txt.indexOf('任务点未完')===-1)continue;"
         "try{"
-        "var cs=window.getComputedStyle(el);if(!cs)continue;"
         "var isPopup=cs.position==='fixed'||cs.position==='absolute'||"
         "(cs.zIndex!=='auto'&&parseInt(cs.zIndex)>50)||"
         "(cs.boxShadow!=='none'&&cs.borderRadius!=='0px');"
@@ -606,11 +607,12 @@ def navigate_next_js() -> str:
         "}catch(e){continue;}"
         "hasTaskUnfinished=true;"
         "var nc=el.querySelector('.nextChapter');"
-        "if(nc&&nc.offsetParent!==null&&zi>bestZ){best=nc;bestZ=zi;}"
+        # position:fixed 内的元素 offsetParent 也是 null，改用 offsetWidth
+        "if(nc&&nc.offsetWidth>0&&zi>bestZ){best=nc;bestZ=zi;}"
         "var links=el.querySelectorAll('a,button');"
         "for(var j=0;j<links.length;j++){"
         "var t=(links[j].textContent||'').trim();"
-        "if(t.indexOf('下一节')!==-1&&links[j].offsetParent!==null&&zi>bestZ){"
+        "if(t.indexOf('下一节')!==-1&&links[j].offsetWidth>0&&zi>bestZ){"
         "best=links[j];bestZ=zi;"
         "}"
         "}"
@@ -620,12 +622,12 @@ def navigate_next_js() -> str:
         # Normal nav button search
         "function _findNavBtn(){"
         "var b=document.getElementById('prevNextFocusNext');"
-        "if(!b||b.offsetParent===null){b=document.querySelector('.nextChapter');}"
-        "if(!b||b.offsetParent===null){"
+        "if(!b||b.offsetWidth===0){b=document.querySelector('.nextChapter');}"
+        "if(!b||b.offsetWidth===0){"
         "var all=document.querySelectorAll('a,button,span,div,li');"
         "for(var i=0;i<all.length;i++){"
         "var t=(all[i].textContent||'').trim();"
-        "if(all[i].offsetParent!==null&&(t.indexOf('下一节')!==-1||t.indexOf('下一个')!==-1||t==='继续')){"
+        "if(all[i].offsetWidth>0&&(t.indexOf('下一节')!==-1||t.indexOf('下一个')!==-1||t==='继续')){"
         "b=all[i];break;"
         "}"
         "}"
@@ -674,7 +676,7 @@ def navigate_next_js() -> str:
         "if(!_clicked){"
         "if(elapsed%3000<400)_scrollAll();"  # re-scroll every ~3s in case content loaded
         "var b=_findNavBtn();"
-        "if(b&&b.offsetParent!==null){"
+        "if(b&&b.offsetWidth>0){"
         "b.click();_clicked=true;"
         "console.log('JS_NAV: clicked main next');"
         "setTimeout(_poll,400);return;"
@@ -931,23 +933,25 @@ def detect_popup_js() -> str:
         "var all=document.querySelectorAll('.popDiv,div,section');"
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
-        "if(el.offsetParent===null)continue;"
+        # position:fixed 元素的 offsetParent 是 null，改用 getComputedStyle
+        "var cs=window.getComputedStyle(el);"
+        "if(!cs||cs.display==='none'||cs.visibility==='hidden')continue;"
         "var txt=(el.textContent||'');"
         # 匹配"任务点未完"（涵盖"未完"和"未完成"两种情况）
         "if(txt.indexOf('任务点未完')===-1)continue;"
         "try{"
-        "var cs=window.getComputedStyle(el);if(!cs)continue;"
         "var isPopup=cs.position==='fixed'||cs.position==='absolute'||"
         "(cs.zIndex!=='auto'&&parseInt(cs.zIndex)>50);"
         "if(!isPopup)continue;"
         "found=true;"
         # 检查此弹窗是否含 .nextChapter 按钮
         "var nc=el.querySelector('.nextChapter');"
-        "if(nc&&nc.offsetParent!==null)hasNextChapter=true;"
+        # position:fixed 内的元素 offsetParent 也是 null，改用尺寸判断
+        "if(nc&&nc.offsetWidth>0)hasNextChapter=true;"
         "var links=el.querySelectorAll('a,button');"
         "for(var j=0;j<links.length;j++){"
         "var t=(links[j].textContent||'').trim();"
-        "if(t.indexOf('下一节')!==-1&&links[j].offsetParent!==null)hasNextChapter=true;"
+        "if(t.indexOf('下一节')!==-1&&links[j].offsetWidth>0)hasNextChapter=true;"
         "}"
         # 不 break，继续遍历其他弹窗（页面有多个 .popDiv）
         "}catch(e){}"
@@ -968,12 +972,27 @@ def check_nav_marker_js() -> str:
 
 
 def video_progress_js() -> str:
-    """Return current video progress: {total, done} dict."""
+    """Return current video progress: {total, done, paused} dict.
+
+    paused: 被暂停但未结束的视频数量（seek 被拦截时会暂停）。
+    """
     return (
-        "({"
-        "total:window.__videosTotal||0,"
-        "done:window.__videosDone||0"
-        "})"
+        "(function(){"
+        "var total=window.__videosTotal||0;"
+        "var done=window.__videosDone||0;"
+        # 检测被暂停的视频（seek 被拦截后视频会暂停）
+        "var paused=0;"
+        "var vs=document.querySelectorAll('video,.vjs-tech');"
+        "for(var i=0;i<vs.length;i++){"
+        "var v=vs[i];"
+        "if(v.duration&&!isNaN(v.duration)&&v.paused&&!v.__ended){"
+        "paused++;"
+        # 自动恢复播放
+        "v.play().catch(function(){});"
+        "}"
+        "}"
+        "return {total:total,done:done,paused:paused};"
+        "})()"
     )
 
 
@@ -1041,16 +1060,35 @@ def seek_all_videos_to_end_js() -> str:
 
     Used by Python when the task point is already completed, so we can
     terminate playback early instead of waiting for natural ended.
+
+    修复：学习通会检测 seek 并暂停视频，导致 ended 事件不触发。
+    改为 seek 后立即 play()，确保视频继续播放到 ended。
+    如果 seek 失败（视频被暂停），则恢复播放并保持 2x 速度。
     """
     return (
         "(function(){"
         "var vs=document.querySelectorAll('video,.vjs-tech');"
         "var n=0;"
         "for(var i=0;i<vs.length;i++){"
-        "if(vs[i].duration&&!isNaN(vs[i].duration)){"
-        "vs[i].muted=true;"
-        "vs[i].currentTime=vs[i].duration;"
+        "var v=vs[i];"
+        "if(v.duration&&!isNaN(v.duration)){"
+        "v.muted=true;"
+        # 先尝试 seek 到末尾
+        "var target=v.duration-0.5;"
+        "v.currentTime=target;"
         "n++;"
+        # seek 后立即 play，防止学习通暂停视频
+        "setTimeout(function(){"
+        "if(v.paused){"
+        "v.play().catch(function(){});"
+        "}"
+        # 如果 currentTime 没有到达目标（seek 被拦截），恢复 2x 播放
+        "if(v.currentTime<target-5){"
+        "v.__bypassRate=2;"
+        "v.playbackRate=2;"
+        "v.play().catch(function(){});"
+        "}"
+        "},500);"
         "}"
         "}"
         "return n;"

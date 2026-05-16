@@ -161,7 +161,7 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
         # If task points are done BEFORE all videos naturally ended
         if unfinished == 0:
             logger.info("任务点已完成！立即终止视频播放...")
-            # Seek all videos to end in all frames
+            # Seek all videos to end in all frames（seek 后自动 play 防止暂停）
             for frame in page.frames:
                 try:
                     frame.evaluate(seek_all_videos_to_end_js())
@@ -169,38 +169,47 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
                     pass
             time.sleep(1)
 
-            # Now navigate
+            # 任务点已完成，直接导航，不等视频 ended 事件
             logger.info("任务点已完成，执行导航...")
             from actions.navigation import try_click_next_section
             nav_ok = try_click_next_section(page)
             if nav_ok:
                 time.sleep(2)
                 return True
-            else:
-                logger.warning("导航被阻止（可能弹窗），继续等待...")
+            # 导航失败（弹窗等），继续循环重试
+            logger.warning("导航被阻止（可能弹窗），继续等待...")
 
         # ---- Check video frame progress ----
         all_done = True
         total_videos = 0
         done_videos = 0
+        paused_videos = 0
 
         for frame in page.frames:
             try:
                 info = frame.evaluate(video_progress_js())
                 t = info.get("total", 0)
                 d = info.get("done", 0)
+                p = info.get("paused", 0)
                 total_videos += t
                 done_videos += d
+                paused_videos += p
                 if t > 0 and d < t:
                     all_done = False
-                    break
             except Exception:
                 pass
 
         # Log progress
         if time.time() - last_progress_log > 15:
-            logger.info(f"视频总进度: {done_videos}/{total_videos}")
+            progress_msg = f"视频总进度: {done_videos}/{total_videos}"
+            if paused_videos > 0:
+                progress_msg += f" (暂停: {paused_videos})"
+            logger.info(progress_msg)
             last_progress_log = time.time()
+
+        # 有暂停的视频说明 seek 被拦截，不能算完成
+        if paused_videos > 0:
+            all_done = False
 
         if all_done and total_videos > 0:
             # Videos ended naturally — check task point

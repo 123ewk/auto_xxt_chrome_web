@@ -141,7 +141,10 @@ def click_popup_next_chapter(page: Page) -> bool:
         "var all=document.querySelectorAll('.popDiv');"
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
-        "if(el.offsetParent===null)continue;"
+        # 注意：position:fixed 元素的 offsetParent 是 null，不能用 offsetParent 判断可见性
+        # 改用 getComputedStyle 检查
+        "var cs=window.getComputedStyle(el);"
+        "if(!cs||cs.display==='none'||cs.visibility==='hidden')continue;"
         "var nc=el.querySelector('.nextChapter');"
         "if(!nc)continue;"
         # 从 onclick 属性提取 PCount.next(...) 调用
@@ -174,6 +177,7 @@ def click_popup_next_chapter(page: Page) -> bool:
     )
 
     # 弹窗在顶层 frame，优先在顶层 frame 执行
+    url_before = page.url
     for frame in page.frames:
         try:
             result = frame.evaluate(js_extract_pcount)
@@ -181,7 +185,14 @@ def click_popup_next_chapter(page: Page) -> bool:
                 logger.info("弹窗「下一节」点击成功（PCount.next 调用）")
                 return True
         except Exception:
-            pass
+            # PCount.next() 触发页面导航会销毁执行上下文，导致 evaluate 抛异常
+            # 这是成功导航的标志，不是失败！检查 URL 是否变化
+            try:
+                if page.url != url_before:
+                    logger.info("弹窗「下一节」点击成功（PCount.next 触发导航，执行上下文已销毁）")
+                    return True
+            except Exception:
+                pass
 
     # 策略2：Playwright locator 兜底（mask 层可能不总是存在）
     for frame in page.frames:
@@ -216,7 +227,9 @@ def _js_click_popup_next(page: Page) -> bool:
         "var all=document.querySelectorAll('.popDiv');"
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
-        "if(el.offsetParent===null)continue;"
+        # position:fixed 元素的 offsetParent 是 null，改用 getComputedStyle
+        "var cs=window.getComputedStyle(el);"
+        "if(!cs||cs.display==='none'||cs.visibility==='hidden')continue;"
         "var nc=el.querySelector('.nextChapter');"
         "if(!nc)continue;"
         "var oc=nc.getAttribute('onclick')||'';"
@@ -234,6 +247,7 @@ def _js_click_popup_next(page: Page) -> bool:
         "})()"
     )
 
+    url_before = page.url
     for frame in page.frames:
         try:
             result = frame.evaluate(js)
@@ -241,7 +255,13 @@ def _js_click_popup_next(page: Page) -> bool:
                 logger.info("JS 层弹窗点击成功")
                 return True
         except Exception:
-            pass
+            # PCount.next() 触发导航会销毁执行上下文，检查 URL 变化
+            try:
+                if page.url != url_before:
+                    logger.info("JS 层弹窗点击成功（导航触发，执行上下文已销毁）")
+                    return True
+            except Exception:
+                pass
 
     return False
 
