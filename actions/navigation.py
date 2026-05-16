@@ -442,9 +442,9 @@ def try_click_next_section(page: Page) -> bool:
 
         return False
 
-    # 1. Main frame
+    # 1. Main frame (short timeout — popup-based nav needs quick fallback)
     logger.info("DOM 导航：查找下一节按钮（主 frame）...")
-    if _try_frame(page, timeout=15000):
+    if _try_frame(page, timeout=8000):
         new_frames = {f.url for f in page.frames}
         old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
         new_sig = {u for u in new_frames if u and u != 'about:blank'}
@@ -457,8 +457,23 @@ def try_click_next_section(page: Page) -> bool:
             return True
         logger.info("主 frame 导航标记成功，frame/URL 未变，检查 iframe...")
 
-    # 2. Iframe fallback (e.g. iframe#panView on image/doc pages)
-    logger.info("主 frame 导航未成功，尝试 iframe...")
+    # 2. Popup retry immediately after main frame fails (don't wait for iframes)
+    #    The main frame click may have triggered a task-unfinished popup that
+    #    navigate_next_js's _findPopupInfo couldn't handle.
+    popup = detect_popup(page)
+    if popup.get("found") and popup.get("hasNextChapter"):
+        logger.info("主 frame 未成功，检测到弹窗，点击「下一节」...")
+        if click_popup_next_chapter(page):
+            time.sleep(2)
+            new_frames = {f.url for f in page.frames}
+            old_sig = {u for u in frame_urls_before if u and u != 'about:blank'}
+            new_sig = {u for u in new_frames if u and u != 'about:blank'}
+            if page.url != url_before or old_sig != new_sig:
+                logger.info("弹窗点击后页面已跳转")
+                return True
+
+    # 3. Iframe fallback (e.g. iframe#panView on image/doc pages)
+    logger.info("尝试 iframe...")
 
     # 先用 scroll_ppt_container() 统一滚动 PPT（和第一个 PPT 走同一条路径）
     scroll_ppt_container(page)
@@ -488,10 +503,10 @@ def try_click_next_section(page: Page) -> bool:
         else:
             logger.info(f"  iframe 未找到按钮: {url[:60]}")
 
-    # 3. 导航失败后再次检测弹窗（弹窗可能在导航过程中出现）
+    # 4. Final popup retry
     popup = detect_popup(page)
     if popup.get("found") and popup.get("hasNextChapter"):
-        logger.info("导航后检测到弹窗，重试点击「下一节」...")
+        logger.info("最终检测到弹窗，重试点击「下一节」...")
         if click_popup_next_chapter(page):
             time.sleep(2)
             new_frames = {f.url for f in page.frames}
