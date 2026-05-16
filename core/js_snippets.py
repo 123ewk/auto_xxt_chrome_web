@@ -1057,19 +1057,48 @@ def video_progress_js() -> str:
 
 
 def task_point_status_js() -> str:
-    """Check task-point completion by reading .ans-job-icon aria-label.
+    """Check task-point completion and classify each icon by type.
 
-    Returns {total, unfinished} dict.
+    Task-point types:
+      - "video":  condition text contains "观看时长" (video watch-time task)
+      - "ppt":    condition text is empty or non-video (PPT/document scroll task)
+
+    Returns {total, unfinished, videoUnfinished, pptUnfinished, details}.
     """
     return (
         "(function(){"
         "var icons=document.querySelectorAll('.ans-job-icon');"
-        "var unfinished=0,total=icons.length;"
+        "var unfinished=0,total=icons.length,videoUnfinished=0,pptUnfinished=0;"
+        "var details=[];"
         "for(var i=0;i<icons.length;i++){"
         "var label=icons[i].getAttribute('aria-label')||'';"
-        "if(label.indexOf('任务点未完')!==-1)unfinished++;"
+        "var cond=icons[i].querySelector('.task-condition');"
+        "var condTxt=cond?(cond.textContent||''):'';"
+        "var isUnfinished=label.indexOf('任务点未完')!==-1;"
+        "var isVideo=condTxt.indexOf('观看时长')!==-1;"
+        "var isPPT=condTxt.indexOf('浏览')!==-1||(!isVideo&&condTxt.length<5);"
+        # PPT nodes have short/no condition text, or contain "浏览"
+        "if(isUnfinished){"
+        "unfinished++;"
+        "if(isPPT&&!isVideo)pptUnfinished++;"
+        "else if(isVideo)videoUnfinished++;"
+        "else pptUnfinished++;"  # unknown type → treat as ppt
         "}"
-        "return {total:total,unfinished:unfinished};"
+        "details.push({"
+        "label:label,"
+        "condition:condTxt.substring(0,100),"
+        "isVideo:isVideo,"
+        "isPPT:isPPT,"
+        "unfinished:isUnfinished"
+        "});"
+        "}"
+        "return {"
+        "total:total,"
+        "unfinished:unfinished,"
+        "videoUnfinished:videoUnfinished,"
+        "pptUnfinished:pptUnfinished,"
+        "details:details"
+        "};"
         "})()"
     )
 

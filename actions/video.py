@@ -382,18 +382,63 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
                     pass
                 logger.warning("导航被阻止，继续重试...")
             else:
-                if not retry_injected:
-                    logger.warning(
-                        f"视频已结束但 {unfinished} 个任务点未完成，启动 16x 高速重放..."
+                # Videos ended but some tasks unfinished.
+                # Check TYPE: video tasks need more watch-time (16x retry),
+                # PPT/doc tasks need scroll-to-bottom then navigation.
+                ppt_unfinished = 0
+                video_unfinished = 0
+                for frame in page.frames:
+                    try:
+                        ts = frame.evaluate(task_point_status_js())
+                        ppt_unfinished += ts.get("pptUnfinished", 0)
+                        video_unfinished += ts.get("videoUnfinished", 0)
+                    except Exception:
+                        pass
+
+                if ppt_unfinished > 0:
+                    # PPT-type tasks: scroll then navigate
+                    logger.info(
+                        f"视频已结束，{ppt_unfinished} 个 PPT 任务点未完成，"
+                        f"执行 PPT 滚动 + 导航..."
                     )
-                    for frame in page.frames:
-                        try:
-                            frame.evaluate(retry_video_high_speed_js())
-                        except Exception as e:
-                            logger.warning(f"高速重放注入失败: {e}")
-                    retry_injected = True
-                else:
-                    logger.info(f"等待任务点完成... 剩余未完成: {unfinished}")
+                    from actions.navigation import (
+                        scroll_ppt_container,
+                        try_click_next_section,
+                    )
+                    scroll_ppt_container(page)
+                    time.sleep(1)
+                    nav_ok = try_click_next_section(page)
+                    if nav_ok:
+                        time.sleep(2)
+                        return True
+                    try:
+                        new_frames = {f.url for f in page.frames}
+                        old_sig = {u for u in frame_urls_start if u and u != 'about:blank'}
+                        new_sig = {u for u in new_frames if u and u != 'about:blank'}
+                        if old_sig != new_sig:
+                            logger.info("PPT 操作后 Frame 结构已变化，返回主循环")
+                            time.sleep(2)
+                            return True
+                    except Exception:
+                        pass
+                    logger.warning("PPT 导航未成功，继续等待...")
+                elif video_unfinished > 0:
+                    # Video-type tasks: need more watch time
+                    if not retry_injected:
+                        logger.warning(
+                            f"视频已结束但 {video_unfinished} 个视频任务点未完成，"
+                            f"启动 16x 高速重放..."
+                        )
+                        for frame in page.frames:
+                            try:
+                                frame.evaluate(retry_video_high_speed_js())
+                            except Exception as e:
+                                logger.warning(f"高速重放注入失败: {e}")
+                        retry_injected = True
+                    else:
+                        logger.info(
+                            f"等待视频任务点完成... 剩余: {video_unfinished}"
+                        )
 
         time.sleep(config.VIDEO_CHECK_INTERVAL)
 
