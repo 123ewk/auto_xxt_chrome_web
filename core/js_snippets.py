@@ -1013,6 +1013,24 @@ def check_nav_marker_js() -> str:
     return "!!window.__autoNavDone || window.__autoNavFailedReason === 'task_unfinished'"
 
 
+def video_ready_for_seek_js() -> str:
+    """Check if at least one video has loaded metadata (readyState >= 1, duration > 0).
+
+    Returns true if any video is actually seekable — seek_all_videos_to_end_js()
+    is a no-op on videos with dur=-1 / readyState=0.
+    """
+    return (
+        "(function(){"
+        "var vs=document.querySelectorAll('video,.vjs-tech');"
+        "for(var i=0;i<vs.length;i++){"
+        "var v=vs[i];"
+        "if(v.readyState>=1&&v.duration&&!isNaN(v.duration)&&v.duration>0)return true;"
+        "}"
+        "return false;"
+        "})()"
+    )
+
+
 def video_progress_js() -> str:
     """Return current video progress: {total, done, paused} dict.
 
@@ -1052,6 +1070,51 @@ def task_point_status_js() -> str:
         "if(label.indexOf('任务点未完')!==-1)unfinished++;"
         "}"
         "return {total:total,unfinished:unfinished};"
+        "})()"
+    )
+
+
+def task_point_can_seek_js() -> str:
+    """Check if task-point videos allow seeking (拖拽/快进).
+
+    Reads .task-condition text inside each .ans-job-icon.
+    Key discriminator: "不可拖拽" means the platform blocks seeking.
+
+    Returns:
+        {total: int, draggable: bool, anyBlocked: bool}
+        - total: number of task-point icons found
+        - draggable: true if ANY task point allows seeking (no "不可拖拽")
+        - allBlocked: true if ALL task points block seeking (all have "不可拖拽")
+        - details: [{label, condition, blocked}] per icon
+    """
+    return (
+        "(function(){"
+        "var icons=document.querySelectorAll('.ans-job-icon');"
+        "var total=icons.length;"
+        "var anyDraggable=false;"
+        "var allBlocked=true;"
+        "var details=[];"
+        "for(var i=0;i<icons.length;i++){"
+        "var cond=icons[i].querySelector('.task-condition');"
+        "var condTxt=cond?(cond.textContent||''):'';"
+        "var blocked=condTxt.indexOf('不可拖拽')!==-1;"
+        "if(!blocked)anyDraggable=true;"
+        "else allBlocked=false;"  # at least one is blocked
+        # Actually: allBlocked = true only if ALL are blocked
+        # allBlocked starts as true, set to false if any NOT blocked
+        "if(!blocked)allBlocked=false;"
+        "details.push({"
+        "label:icons[i].getAttribute('aria-label')||'',"
+        "condition:condTxt.substring(0,100),"
+        "blocked:blocked"
+        "});"
+        "}"
+        "return {"
+        "total:total,"
+        "draggable:anyDraggable,"
+        "allBlocked:total>0&&allBlocked,"
+        "details:details"
+        "};"
         "})()"
     )
 

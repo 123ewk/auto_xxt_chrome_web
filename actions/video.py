@@ -17,11 +17,13 @@ import config
 from core.js_snippets import (
     video_detection_js,
     video_diagnostic_js,
+    video_ready_for_seek_js,
     auto_nav_js,
     quiz_handler_js,
     clear_nav_marker_js,
     video_progress_js,
     task_point_status_js,
+    task_point_can_seek_js,
     retry_video_high_speed_js,
     seek_all_videos_to_end_js,
 )
@@ -198,7 +200,60 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
     # Give auto-nav time to initialize in all frames
     time.sleep(2)
 
-    logger.info("=== 监控视频进度 + 任务点检测（16x 连续播放模式）===")
+    # ---- Check seekability BEFORE the loop (not gated on task completion) ----
+    # Read .task-condition text for "不可拖拽" to decide fast (seek) vs slow (2x) path.
+    can_seek = False
+    seekability_checked = False
+    for frame in page.frames:
+        try:
+            info = frame.evaluate(task_point_can_seek_js())
+            if info and info.get("total", 0) > 0:
+                can_seek = info.get("draggable", False)
+                all_blocked = info.get("allBlocked", False)
+                logger.info(
+                    f"任务点拖拽检测: draggable={can_seek} "
+                    f"allBlocked={all_blocked} "
+                    f"details={info.get('details')}"
+                )
+                seekability_checked = True
+                break
+        except Exception:
+            pass
+    if not seekability_checked:
+        can_seek = False
+        logger.info("任务点拖拽检测: 未找到 .task-condition，假定不可拖拽")
+
+    # ---- Act on seekability immediately ----
+    if can_seek:
+        logger.info("视频可拖拽，等待元数据加载后 seek 到末尾...")
+        video_ready = False
+        for _ in range(20):  # max 20s wait for metadata
+            ready = False
+            for frame in page.frames:
+                try:
+                    if frame.evaluate(video_ready_for_seek_js()):
+                        ready = True
+                        break
+                except Exception:
+                    pass
+            if ready:
+                video_ready = True
+                break
+            time.sleep(1)
+        if video_ready:
+            logger.info("视频元数据已就绪，seek 到末尾...")
+            for frame in page.frames:
+                try:
+                    frame.evaluate(seek_all_videos_to_end_js())
+                except Exception:
+                    pass
+            time.sleep(2)
+        else:
+            logger.warning("视频元数据超时未加载，跳过 seek")
+    else:
+        logger.info("视频不可拖拽，等待 2x 自然播放结束...")
+
+    logger.info("=== 监控视频进度 + 任务点检测 ===")
 
     while time.time() < deadline:
         if stop_event and stop_event.is_set():
@@ -206,35 +261,21 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
             return False
 
         # Navigation may swap iframe content without changing the top-frame URL.
-        # Check if the frame that held the video has been replaced or if no
-        # frame still has __videosTotal > 0.
+        # Compare the FULL set of frame URLs (not substring) — a new video
+        # section will have the same iframe pattern but different video src.
         try:
-            has_active_videos = False
-            for f in page.frames:
-                try:
-                    if f.evaluate("window.__videosTotal||0") > 0:
-                        has_active_videos = True
-                        break
-                except Exception:
-                    pass
-            if not has_active_videos:
-                # Are we on a new page (frame structure changed)?
-                current_frame_urls = {f.url for f in page.frames}
-                has_video_frame = any(
-                    'ananas/modules/video' in u or 'video/index.html' in u
-                    for u in current_frame_urls
-                )
-                if not has_video_frame:
-                    logger.info("视频 frame 已消失（页面已变化），返回主循环重新检测")
-                    return True
-                # Frame structure unchanged but videos reset to 0 —
-                # could be a transient state; let the loop retry a few times.
+            current_frame_urls = {f.url for f in page.frames}
+            # Strip about:blank and empty URLs — they're noise
+            old_significant = {u for u in frame_urls_start if u and u != 'about:blank'}
+            new_significant = {u for u in current_frame_urls if u and u != 'about:blank'}
+            if old_significant != new_significant:
+                # Frame structure changed — navigation happened
+                logger.info("Frame 结构已变化（导航成功），返回主循环重新检测")
+                return True
         except Exception:
             pass
 
-        # ---- Check task-point completion early (during playback) ----
-        # Query ALL frames — task-point icons may live in iframes, not top frame.
-        # Aggregate: only trust unfinished==0 when at least ONE frame reports total>0.
+        # ---- Check task-point completion ----
         total_tasks = 0
         unfinished = 0
         for frame in page.frames:
@@ -247,42 +288,24 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
             except Exception:
                 pass
 
-        # Only declare "all done" when we actually FOUND task-point elements
-        # (total_tasks > 0).  A zero-element query does NOT mean completion.
+        # Task points already done → navigate immediately
         if total_tasks > 0 and unfinished == 0:
-            logger.info("任务点已完成！立即终止视频播放...")
-            # Seek all videos to end in all frames（seek 后自动 play 防止暂停）
-            for frame in page.frames:
-                try:
-                    frame.evaluate(seek_all_videos_to_end_js())
-                except Exception:
-                    pass
-            # Wait for seeks to take effect + recovery (300ms setTimeout in JS)
-            # With Bug 4 fix (__bypassTarget/__bypassRate flags), seek should
-            # work immediately; 2s is enough for recovery even if intercepted.
-            time.sleep(2)
-
-            # 任务点已完成，直接导航，不等视频 ended 事件
             logger.info("任务点已完成，执行导航...")
             from actions.navigation import try_click_next_section
             nav_ok = try_click_next_section(page)
             if nav_ok:
                 time.sleep(2)
                 return True
-            # try_click_next_section may return False even though navigation
-            # succeeded (iframe content was swapped).  Check if the video frame
-            # is gone (page changed) and top URL changed.
             try:
                 new_frames = {f.url for f in page.frames}
-                had_video = any('ananas/modules/video' in u for u in frame_urls_start)
-                has_video_now = any('ananas/modules/video' in u for u in new_frames)
-                if had_video and not has_video_now:
-                    logger.info("导航已发生（视频 frame 已消失），返回主循环重新检测")
+                old_sig = {u for u in frame_urls_start if u and u != 'about:blank'}
+                new_sig = {u for u in new_frames if u and u != 'about:blank'}
+                if old_sig != new_sig:
+                    logger.info("Frame 结构已变化（导航成功），返回主循环重新检测")
                     time.sleep(2)
                     return True
             except Exception:
                 pass
-            # 导航失败（弹窗等），继续循环重试
             logger.warning("导航被阻止（可能弹窗），继续等待...")
 
         # ---- Check video frame progress ----
@@ -349,10 +372,10 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
                 # Check frame-level change (iframe content swap doesn't change page.url)
                 try:
                     new_frames = {f.url for f in page.frames}
-                    had_video = any('ananas/modules/video' in u for u in frame_urls_start)
-                    has_video_now = any('ananas/modules/video' in u for u in new_frames)
-                    if had_video and not has_video_now:
-                        logger.info("导航已发生（视频 frame 已消失），返回主循环重新检测")
+                    old_sig = {u for u in frame_urls_start if u and u != 'about:blank'}
+                    new_sig = {u for u in new_frames if u and u != 'about:blank'}
+                    if old_sig != new_sig:
+                        logger.info("Frame 结构已变化（导航成功），返回主循环重新检测")
                         time.sleep(2)
                         return True
                 except Exception:
