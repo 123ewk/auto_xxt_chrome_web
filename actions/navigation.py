@@ -82,11 +82,16 @@ def scroll_ppt_container(page: Page) -> bool:
                 logger.debug(f"panView frame 逐步滚动失败: {e}")
 
     # 兜底：遍历所有 frame 尝试滚动（某些页面结构可能不同）
+    # 只尝试非主 frame，且排除已经尝试过的 panView frame
     if not scrolled:
         for frame in page.frames:
             if frame == page:
                 continue
             if frame == panview_frame:
+                continue
+            url = frame.url
+            # 跳过主页面 frame（滚动它的 documentElement 等于滚动主页面）
+            if 'studentstudy' in url or 'mycourse' in url:
                 continue
             try:
                 result = frame.evaluate(scroll_ppt_gradually_js())
@@ -113,15 +118,15 @@ def click_popup_next_chapter(page: Page) -> bool:
 
     真实弹窗结构（通过诊断确认）：
       弹窗在顶层 frame（studentstudy 页面），不在 iframe 内
-      .popDiv[3] 包含 .nextChapter 按钮
+      页面有 10 个 .popDiv，只有含 .nextChapter 的那个才是目标弹窗
       按钮标签: <a>，文本: "下一节"
       onclick: closeDeleteWindow();PCount.next('3','1021706543','254631881','140506502','')
       弹窗文本: "当前章节还有任务点未完"（注意是"未完"不是"未完成"）
 
     点击策略（按优先级）：
-    1. Playwright locator 直接点击 .popDiv .nextChapter（force=True）
-    2. JS 层提取 onclick 并 eval 完整执行（含 closeDeleteWindow）
-    3. JS 层 .click() / MouseEvent 兜底
+    1. Playwright locator 精确匹配含 .nextChapter 的 .popDiv
+    2. Playwright locator 匹配含「下一节」文本的 .popDiv
+    3. JS 层提取 onclick 并 eval 完整执行（含 closeDeleteWindow）
 
     Args:
         page: Playwright Page 对象。
@@ -132,27 +137,27 @@ def click_popup_next_chapter(page: Page) -> bool:
     # 弹窗在顶层 frame，优先在顶层 frame 查找
     for frame in page.frames:
         try:
-            # 方式1：精确匹配 .popDiv .nextChapter
-            btn = frame.locator(".popDiv .nextChapter")
+            # 方式1：精确匹配含 .nextChapter 的 .popDiv（最可靠）
+            btn = frame.locator(".popDiv:has(.nextChapter) .nextChapter")
             if btn.count() > 0:
                 btn.first.click(force=True, timeout=3000)
-                logger.info("弹窗「下一节」按钮点击成功（.nextChapter locator）")
+                logger.info("弹窗「下一节」按钮点击成功（:has(.nextChapter) locator）")
                 return True
         except Exception as e:
-            logger.debug(f".nextChapter locator 点击失败: {e}")
+            logger.debug(f":has(.nextChapter) locator 点击失败: {e}")
 
         try:
-            # 方式2：匹配弹窗内含「下一节」文本的按钮/链接
-            btn = frame.locator('.popDiv:has-text("任务点未完") >> :text("下一节")')
+            # 方式2：匹配含「下一节」文本链接的 .popDiv
+            btn = frame.locator('.popDiv:has(a:has-text("下一节")) >> a:has-text("下一节")')
             if btn.count() > 0:
                 btn.first.click(force=True, timeout=3000)
-                logger.info("弹窗「下一节」按钮点击成功（文本匹配 locator）")
+                logger.info("弹窗「下一节」按钮点击成功（a:has-text locator）")
                 return True
         except Exception as e:
-            logger.debug(f"文本匹配 locator 点击失败: {e}")
+            logger.debug(f"a:has-text locator 点击失败: {e}")
 
         try:
-            # 方式3：更宽泛的弹窗选择器
+            # 方式3：宽泛匹配 .popDiv 内所有 .nextChapter
             btn = frame.locator(".popDiv a.nextChapter, .popDiv button.nextChapter")
             if btn.count() > 0:
                 btn.first.click(force=True, timeout=3000)
@@ -324,24 +329,18 @@ def try_click_next_section(page: Page) -> bool:
 
     # 2. Iframe fallback (e.g. iframe#panView on image/doc pages)
     logger.info("主 frame 导航未成功，尝试 iframe...")
+
+    # 先用 scroll_ppt_container() 统一滚动 PPT（和第一个 PPT 走同一条路径）
+    scroll_ppt_container(page)
+
     for frame in page.frames:
         if frame == page:
             continue
-        logger.info(f"  iframe 尝试: {frame.url[:80]}")
-        # 优先在 panView frame 滚动（PPT 内容的真正滚动目标）
         url = frame.url
-        if 'pan-yz.chaoxing.com' in url or 'screen/v2/file' in url:
-            try:
-                frame.evaluate(scroll_to_bottom_js())
-                time.sleep(1)
-            except Exception:
-                pass
-        else:
-            try:
-                frame.evaluate(scroll_to_bottom_js())
-                time.sleep(1)
-            except Exception:
-                pass
+        # 只在 panView frame 尝试导航（其他 frame 没有下一节按钮）
+        if 'pan-yz.chaoxing.com' not in url and 'screen/v2/file' not in url:
+            continue
+        logger.info(f"  iframe 尝试: {url[:80]}")
 
         if _try_frame(frame, timeout=15000):
             if page.url != url_before:
@@ -351,7 +350,7 @@ def try_click_next_section(page: Page) -> bool:
             else:
                 logger.info("iframe 导航标记成功但 URL 未变")
         else:
-            logger.info(f"  iframe 未找到按钮: {frame.url[:60]}")
+            logger.info(f"  iframe 未找到按钮: {url[:60]}")
 
     # 3. 导航失败后再次检测弹窗（弹窗可能在导航过程中出现）
     popup = detect_popup(page)

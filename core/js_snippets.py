@@ -553,10 +553,13 @@ def navigate_next_js() -> str:
         "var _popupClickMax=6;"
         "var _startTime=Date.now();"
         # 滚动 PPT 内容到底部
-        # 目标是 documentElement（panView frame 的真正滚动容器）
-        # #content1 是主页面滚动容器，不要动它
+        # 只在 panView frame 内滚动 documentElement
+        # 在主 frame 中 documentElement 是主页面，不能滚动它！
         "function _scrollAll(){"
-        # 滚动 documentElement（PPT 内容的真正滚动目标）
+        # 判断是否在 panView frame（PPT 内容的真正所在 frame）
+        "var _isPanView=location.href.indexOf('pan-yz.chaoxing.com')!==-1||location.href.indexOf('screen/v2/file')!==-1;"
+        # 只在 panView frame 内滚动 documentElement
+        "if(_isPanView){"
         "var _de=document.documentElement;"
         "if(_de){"
         "var _ms=_de.scrollHeight-_de.clientHeight;"
@@ -567,6 +570,7 @@ def navigate_next_js() -> str:
         "try{window.scrollTo(0,_ms);"
         "console.log('JS_NAV_SCROLL: window.scrollTo → '+window.scrollY);"
         "}catch(e){}"
+        "}"
         "}"
         "}"
         "}"
@@ -789,49 +793,46 @@ def scroll_to_bottom_js() -> str:
       - 必须由 Playwright 在正确的 frame 上执行 evaluate
 
     滚动策略（在 panView frame 内执行，绝不使用 wheel 事件避免冒泡到父 frame）：
-    1. document.documentElement.scrollTop = maxScroll（原生滚动，最可靠）
-    2. window.scrollTo(0, maxScroll) 兜底
-    3. document.scrollingElement.scrollTop 兜底
-    4. .fileBox 兜底：其他页面类型可能仍用 .fileBox
+    1. 判断当前是否在 panView frame（pan-yz.chaoxing.com 或 screen/v2/file）
+    2. 仅在 panView frame 内滚动 documentElement
+    3. 非 panView frame 只尝试 .fileBox 兜底
+    4. 这样避免在主 frame 滚动 documentElement 导致主页面滚动
 
     返回值：滚动距离（>0 表示成功，0 表示失败）
     """
     return (
         "(function(){"
-        # 滚动 documentElement（panView frame 的真正滚动容器）
-        "function _scrollDocEl(doc){"
-        "var de=doc.documentElement;"
-        "if(!de)return 0;"
+        # 判断是否在 panView frame（PPT 内容的真正所在 frame）
+        "var _isPanView=location.href.indexOf('pan-yz.chaoxing.com')!==-1||location.href.indexOf('screen/v2/file')!==-1;"
+        # 只在 panView frame 内滚动 documentElement
+        # 在主 frame 中 documentElement 是主页面，不能滚动它！
+        "if(_isPanView){"
+        "var de=document.documentElement;"
+        "if(de){"
         "var maxScroll=de.scrollHeight-de.clientHeight;"
-        "if(maxScroll<=0)return 0;"
-        # 方式1：documentElement.scrollTop
+        "if(maxScroll>0){"
         "de.scrollTop=maxScroll;"
         "if(de.scrollTop>0){"
         "console.log('SCROLL: documentElement scrollTop → '+de.scrollTop+'/'+maxScroll);"
         "return de.scrollTop;"
         "}"
-        # 方式2：window.scrollTo
-        "try{var w=doc.defaultView;if(w){"
-        "w.scrollTo(0,maxScroll);"
-        "if(w.scrollY>0){"
-        "console.log('SCROLL: window.scrollTo → '+w.scrollY);"
-        "return w.scrollY;"
+        "try{window.scrollTo(0,maxScroll);"
+        "if(window.scrollY>0){"
+        "console.log('SCROLL: window.scrollTo → '+window.scrollY);"
+        "return window.scrollY;"
         "}"
-        "}}catch(e){}"
-        # 方式3：scrollingElement
-        "try{var se=doc.scrollingElement;if(se){"
+        "}catch(e){}"
+        "try{var se=document.scrollingElement;if(se){"
         "se.scrollTop=se.scrollHeight;"
         "if(se.scrollTop>0){"
         "console.log('SCROLL: scrollingElement → '+se.scrollTop);"
         "return se.scrollTop;"
         "}"
         "}}catch(e){}"
-        "return 0;"
         "}"
-        # 尝试当前文档
-        "var result=_scrollDocEl(document);"
-        "if(result>0)return result;"
-        # .fileBox 兜底（其他页面类型可能仍用 .fileBox 作为滚动容器）
+        "}"
+        "}"
+        # .fileBox 兜底（其他页面类型或非 panView frame 可能仍用 .fileBox）
         "var fbs=document.querySelectorAll('.fileBox');"
         "for(var i=0;i<fbs.length;i++){"
         "var fb=fbs[i];"
@@ -869,13 +870,17 @@ def scroll_ppt_gradually_js() -> str:
     """
     return (
         "new Promise(function(resolve){"
-        # 查找滚动目标：优先 documentElement，兜底 .fileBox
+        # 判断是否在 panView frame（只在 panView frame 内滚动 documentElement）
+        "var _isPanView=location.href.indexOf('pan-yz.chaoxing.com')!==-1||location.href.indexOf('screen/v2/file')!==-1;"
+        # 查找滚动目标：仅在 panView frame 内滚动 documentElement
         "function _find(doc){"
-        "var de=doc.documentElement;"
         "var targets=[];"
+        "if(_isPanView){"
+        "var de=doc.documentElement;"
         "if(de){"
         "var total=de.scrollHeight-de.clientHeight;"
         "if(total>0)targets.push({el:de,total:total,cur:0,id:'documentElement'});"
+        "}"
         "}"
         "var fbs=doc.querySelectorAll('.fileBox');"
         "for(var i=0;i<fbs.length;i++){"
@@ -915,6 +920,9 @@ def detect_popup_js() -> str:
       弹窗在顶层 frame（studentstudy 页面），不在 iframe 内。
       .nextChapter 按钮的 onclick: closeDeleteWindow();PCount.next(...)
 
+    诊断发现页面有 10 个 .popDiv，只有部分含 .nextChapter 按钮。
+    不能在第一个匹配就 break，必须遍历所有找到含按钮的那个。
+
     返回 {found: bool, hasNextChapter: bool} 字典。
     """
     return (
@@ -933,6 +941,7 @@ def detect_popup_js() -> str:
         "(cs.zIndex!=='auto'&&parseInt(cs.zIndex)>50);"
         "if(!isPopup)continue;"
         "found=true;"
+        # 检查此弹窗是否含 .nextChapter 按钮
         "var nc=el.querySelector('.nextChapter');"
         "if(nc&&nc.offsetParent!==null)hasNextChapter=true;"
         "var links=el.querySelectorAll('a,button');"
@@ -940,7 +949,7 @@ def detect_popup_js() -> str:
         "var t=(links[j].textContent||'').trim();"
         "if(t.indexOf('下一节')!==-1&&links[j].offsetParent!==null)hasNextChapter=true;"
         "}"
-        "break;"
+        # 不 break，继续遍历其他弹窗（页面有多个 .popDiv）
         "}catch(e){}"
         "}"
         "return {found:found,hasNextChapter:hasNextChapter};"
