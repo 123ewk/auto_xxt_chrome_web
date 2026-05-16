@@ -56,6 +56,46 @@ def video_detection_js() -> str:
     )
 
 
+def video_diagnostic_js() -> str:
+    """Diagnostic: when video_detection_js returns 0, explain WHY.
+
+    Returns a dict string with:
+      - rawVideos: count of ALL <video>/.vjs-tech (no size filter)
+      - rawVideoDetails: [{id, ow, oh, dur, readyState, src}]
+      - hasVideoJS: bool — .video-js container exists
+      - filteredCount: count after size filter (should match _fvAll result)
+      - videoIFrames: count of iframes with 'video' in src
+      - readyStateSummary: e.g. "0:3, 4:1" (how many at each readyState)
+    """
+    return (
+        "(function(){"
+        + _VIDEO_FINDER_ALL +
+        "var all=document.querySelectorAll('video,.vjs-tech');"
+        "var details=[];"
+        "for(var i=0;i<all.length;i++){"
+        "var v=all[i];"
+        "details.push({id:v.id||'',ow:v.offsetWidth,oh:v.offsetHeight,"
+        "dur:v.duration&&!isNaN(v.duration)?v.duration:-1,"
+        "readyState:v.readyState,"
+        "src:(v.src||v.getAttribute('src')||'').substring(0,80),"
+        "preload:v.getAttribute('preload')||'',"
+        "paused:v.paused});"
+        "}"
+        "var filtered=_fvAll(document,false);"
+        "var vi=0;"
+        "var fs=document.querySelectorAll('iframe');"
+        "for(var j=0;j<fs.length;j++){if((fs[j].src||'').indexOf('video')!==-1)vi++;}"
+        "return JSON.stringify({"
+        "rawVideos:all.length,"
+        "rawVideoDetails:details,"
+        "hasVideoJS:!!document.querySelector('.video-js'),"
+        "filteredCount:filtered.length,"
+        "videoIFrames:vi"
+        "});"
+        "})()"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Video control
 # ---------------------------------------------------------------------------
@@ -246,13 +286,13 @@ def quiz_handler_js() -> str:
         # Found container with all inputs — look for submit button
         "var btns=c.querySelectorAll('button,a,input[type=button],input[type=submit],.jb_btn,.btnBlue,.ans-btn');"
         "var vis=[];"
-        "for(var i=0;i<btns.length;i++){if(btns[i].offsetParent!==null)vis.push(btns[i]);}"
+        "for(var i=0;i<btns.length;i++){if(btns[i].offsetWidth>0)vis.push(btns[i]);}"
         "if(vis.length>0)return vis[vis.length-1];"  # last button = submit
         # Broader: any element with pointer cursor that's not an input/label
         "var all=c.querySelectorAll('*');"
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
-        "if(el.offsetParent===null)continue;"
+        "try{var _cs0=window.getComputedStyle(el);if(!_cs0||_cs0.display==='none'||_cs0.visibility==='hidden')continue;}catch(e){continue;}"
         "var tag=el.tagName;"
         "if(tag==='INPUT'||tag==='LABEL')continue;"
         "try{var cs=window.getComputedStyle(el);"
@@ -267,7 +307,7 @@ def quiz_handler_js() -> str:
         "function _findQuiz(){"
         "var all=document.querySelectorAll('input[type=radio],input[type=checkbox]');"
         "var vis=[];"
-        "for(var i=0;i<all.length;i++){if(all[i].offsetParent!==null)vis.push(all[i]);}"
+        "for(var i=0;i<all.length;i++){if(all[i].offsetWidth>0)vis.push(all[i]);}"
         "if(vis.length<2)return null;"
         "var groups=_groupInputs(vis);"
         "for(var g=0;g<groups.length;g++){"
@@ -291,7 +331,9 @@ def quiz_handler_js() -> str:
         "var candidates=[];"
         "for(var i=0;i<all.length;i++){"
         "var el=all[i];"
-        "if(el.offsetParent===null)continue;"
+        # Skip non-visible elements (use getComputedStyle — offsetParent is null
+        # for position:fixed elements per W3C spec, NOT a visibility indicator)
+        "try{var _dcs=window.getComputedStyle(el);if(!_dcs||_dcs.display==='none'||_dcs.visibility==='hidden')continue;}catch(e){continue;}"
         # Skip sidebar/tree/directory: has many <li> (navigation menus)
         "if(el.querySelectorAll('li').length>5)continue;"
         # Skip elements at viewport edges (sidebars, not popups)
@@ -309,7 +351,7 @@ def quiz_handler_js() -> str:
         # Skip if contains visible quiz inputs
         "var ri=el.querySelectorAll('input[type=radio],input[type=checkbox]');"
         "var hasQz=false;"
-        "for(var j=0;j<ri.length;j++){if(ri[j].offsetParent!==null){hasQz=true;break;}}"
+        "for(var j=0;j<ri.length;j++){if(ri[j].offsetWidth>0){hasQz=true;break;}}"
         "if(hasQz)continue;"
         # Dedup: fingerprint by tag+class+size (same element re-detected)
         "var fp=el.tagName+'_'+(el.className||'').substr(0,40)+'_'+el.offsetWidth+'x'+el.offsetHeight;"
@@ -347,11 +389,11 @@ def quiz_handler_js() -> str:
         "if(_hasNavBtn){console.log('QUIZ_HANDLER: skipping nav popup');continue;}"
         # Normal dismiss: close buttons first
         "var closeBtn=el.querySelector('.popClose,.close,.btn-close,[class*=close]');"
-        "if(closeBtn&&closeBtn.offsetParent!==null){closeBtn.click();console.log('QUIZ_HANDLER: dismissed via close');return true;}"
+        "if(closeBtn&&closeBtn.offsetWidth>0){closeBtn.click();console.log('QUIZ_HANDLER: dismissed via close');return true;}"
         # Fallback: any button/a (skip navigation buttons)
         "var btns=el.querySelectorAll('button,a');"
         "for(var j=0;j<btns.length;j++){"
-        "if(btns[j].offsetParent!==null){"
+        "if(btns[j].offsetWidth>0){"
         "var t=(btns[j].textContent||'').trim();"
         "if(t.indexOf('下一节')!==-1||t.indexOf('去学习')!==-1)continue;"
         "btns[j].click();console.log('QUIZ_HANDLER: dismissed via button');return true;"
@@ -1061,9 +1103,13 @@ def seek_all_videos_to_end_js() -> str:
     Used by Python when the task point is already completed, so we can
     terminate playback early instead of waiting for natural ended.
 
-    修复：学习通会检测 seek 并暂停视频，导致 ended 事件不触发。
-    改为 seek 后立即 play()，确保视频继续播放到 ended。
-    如果 seek 失败（视频被暂停），则恢复播放并保持 2x 速度。
+    Bug 4 fix: set __bypassTarget / __bypassRate BEFORE the seek so the
+    bypass layer (video_bypass_init_js) recognizes this as OUR action and
+    does not block it.  Without these flags, the platform's seeked/seeked
+    listeners can pause the video, preventing the ended event from firing.
+
+    Recovery: if seek was still blocked (currentTime < target-5 after 300ms),
+    keep playing at 8x to finish the remaining duration quickly.
     """
     return (
         "(function(){"
@@ -1073,22 +1119,26 @@ def seek_all_videos_to_end_js() -> str:
         "var v=vs[i];"
         "if(v.duration&&!isNaN(v.duration)){"
         "v.muted=true;"
-        # 先尝试 seek 到末尾
+        # Signal bypass layer: these changes are ours, don't block
         "var target=v.duration-0.5;"
+        "v.__bypassTarget=target;"
+        "v.__bypassRate=8;"
+        # Seek + speed up
         "v.currentTime=target;"
+        "v.playbackRate=8;"
         "n++;"
-        # seek 后立即 play，防止学习通暂停视频
+        # Recovery: if platform still intercepted, keep playing at 8x
         "setTimeout(function(){"
         "if(v.paused){"
         "v.play().catch(function(){});"
         "}"
-        # 如果 currentTime 没有到达目标（seek 被拦截），恢复 2x 播放
         "if(v.currentTime<target-5){"
-        "v.__bypassRate=2;"
-        "v.playbackRate=2;"
+        "v.__bypassTarget=v.duration-0.5;"
+        "v.__bypassRate=8;"
+        "v.playbackRate=8;"
         "v.play().catch(function(){});"
         "}"
-        "},500);"
+        "},300);"
         "}"
         "}"
         "return n;"

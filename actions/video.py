@@ -16,6 +16,7 @@ from playwright.sync_api import Page
 import config
 from core.js_snippets import (
     video_detection_js,
+    video_diagnostic_js,
     auto_nav_js,
     quiz_handler_js,
     clear_nav_marker_js,
@@ -50,6 +51,24 @@ def ensure_video_present(page: Page) -> int:
             if count > 0:
                 logger.info(f"检测到 {count} 个视频元素")
             else:
+                # --- diagnostic: explain why detection returned 0 ---
+                for frame in page.frames:
+                    try:
+                        diag = frame.evaluate(video_diagnostic_js())
+                        if diag:
+                            import json
+                            d = json.loads(diag)
+                            if d.get("rawVideos", 0) > 0 or d.get("hasVideoJS"):
+                                logger.warning(
+                                    f"[诊断] frame={frame.url[:80]} "
+                                    f"rawVideos={d.get('rawVideos')} "
+                                    f"hasVideoJS={d.get('hasVideoJS')} "
+                                    f"filteredCount={d.get('filteredCount')} "
+                                    f"videoIFrames={d.get('videoIFrames')} "
+                                    f"details={d.get('rawVideoDetails')}"
+                                )
+                    except Exception:
+                        pass
                 logger.warning("当前页面没有视频，跳过播放")
             return count
         except Exception as e:
@@ -103,10 +122,41 @@ def play_current_video(page: Page) -> bool:
             if result is not None:
                 injected_count += 1
                 logger.info(f"  frame 注入成功, 视频数={result}: {frame.url[:80]}")
+                if result == 0:
+                    # Diagnostic: why did auto_nav find 0 videos?
+                    try:
+                        diag = frame.evaluate(video_diagnostic_js())
+                        if diag:
+                            import json
+                            d = json.loads(diag)
+                            logger.warning(
+                                f"[注入诊断] frame={frame.url[:80]} "
+                                f"rawVideos={d.get('rawVideos')} "
+                                f"hasVideoJS={d.get('hasVideoJS')} "
+                                f"filteredCount={d.get('filteredCount')} "
+                                f"details={d.get('rawVideoDetails')}"
+                            )
+                    except Exception:
+                        pass
             else:
                 logger.warning(f"  frame 注入后 __videosTotal 未定义: {frame.url[:80]}")
         except Exception as e:
             logger.warning(f"  frame 注入失败: {frame.url[:60]} — {e}")
+            # Diagnostic on injection failure
+            try:
+                diag = frame.evaluate(video_diagnostic_js())
+                if diag:
+                    import json
+                    d = json.loads(diag)
+                    if d.get("rawVideos", 0) > 0 or d.get("hasVideoJS"):
+                        logger.warning(
+                            f"[注入失败诊断] frame={frame.url[:80]} "
+                            f"rawVideos={d.get('rawVideos')} "
+                            f"hasVideoJS={d.get('hasVideoJS')} "
+                            f"details={d.get('rawVideoDetails')}"
+                        )
+            except Exception:
+                pass
 
     # Step 2: Inject quiz handler into ALL frames
     for frame in all_frames:
@@ -140,6 +190,11 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
     last_progress_log = 0
     retry_injected = False
 
+    # Record the set of frame URLs at monitor start.  Navigation within the
+    # 学习通 course page swaps iframe content WITHOUT changing the top-frame URL,
+    # so we must track frame-level changes, not page.url.
+    frame_urls_start = {f.url for f in page.frames}
+
     # Give auto-nav time to initialize in all frames
     time.sleep(2)
 
@@ -150,16 +205,51 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
             logger.info("收到停止信号")
             return False
 
-        # ---- Check task-point completion early (during playback) ----
+        # Navigation may swap iframe content without changing the top-frame URL.
+        # Check if the frame that held the video has been replaced or if no
+        # frame still has __videosTotal > 0.
         try:
-            task_status = page.evaluate(task_point_status_js())
-            unfinished = task_status.get("unfinished", 0)
-            total_tasks = task_status.get("total", 0)
+            has_active_videos = False
+            for f in page.frames:
+                try:
+                    if f.evaluate("window.__videosTotal||0") > 0:
+                        has_active_videos = True
+                        break
+                except Exception:
+                    pass
+            if not has_active_videos:
+                # Are we on a new page (frame structure changed)?
+                current_frame_urls = {f.url for f in page.frames}
+                has_video_frame = any(
+                    'ananas/modules/video' in u or 'video/index.html' in u
+                    for u in current_frame_urls
+                )
+                if not has_video_frame:
+                    logger.info("视频 frame 已消失（页面已变化），返回主循环重新检测")
+                    return True
+                # Frame structure unchanged but videos reset to 0 —
+                # could be a transient state; let the loop retry a few times.
         except Exception:
-            unfinished = total_tasks = 0
+            pass
 
-        # If task points are done BEFORE all videos naturally ended
-        if unfinished == 0:
+        # ---- Check task-point completion early (during playback) ----
+        # Query ALL frames — task-point icons may live in iframes, not top frame.
+        # Aggregate: only trust unfinished==0 when at least ONE frame reports total>0.
+        total_tasks = 0
+        unfinished = 0
+        for frame in page.frames:
+            try:
+                ts = frame.evaluate(task_point_status_js())
+                t = ts.get("total", 0)
+                u = ts.get("unfinished", 0)
+                total_tasks += t
+                unfinished += u
+            except Exception:
+                pass
+
+        # Only declare "all done" when we actually FOUND task-point elements
+        # (total_tasks > 0).  A zero-element query does NOT mean completion.
+        if total_tasks > 0 and unfinished == 0:
             logger.info("任务点已完成！立即终止视频播放...")
             # Seek all videos to end in all frames（seek 后自动 play 防止暂停）
             for frame in page.frames:
@@ -167,7 +257,10 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
                     frame.evaluate(seek_all_videos_to_end_js())
                 except Exception:
                     pass
-            time.sleep(1)
+            # Wait for seeks to take effect + recovery (300ms setTimeout in JS)
+            # With Bug 4 fix (__bypassTarget/__bypassRate flags), seek should
+            # work immediately; 2s is enough for recovery even if intercepted.
+            time.sleep(2)
 
             # 任务点已完成，直接导航，不等视频 ended 事件
             logger.info("任务点已完成，执行导航...")
@@ -176,6 +269,19 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
             if nav_ok:
                 time.sleep(2)
                 return True
+            # try_click_next_section may return False even though navigation
+            # succeeded (iframe content was swapped).  Check if the video frame
+            # is gone (page changed) and top URL changed.
+            try:
+                new_frames = {f.url for f in page.frames}
+                had_video = any('ananas/modules/video' in u for u in frame_urls_start)
+                has_video_now = any('ananas/modules/video' in u for u in new_frames)
+                if had_video and not has_video_now:
+                    logger.info("导航已发生（视频 frame 已消失），返回主循环重新检测")
+                    time.sleep(2)
+                    return True
+            except Exception:
+                pass
             # 导航失败（弹窗等），继续循环重试
             logger.warning("导航被阻止（可能弹窗），继续等待...")
 
@@ -199,6 +305,25 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
             except Exception:
                 pass
 
+        # Diagnostic: when all frames report 0 videos, check raw DOM state
+        if total_videos == 0:
+            for frame in page.frames:
+                try:
+                    diag = frame.evaluate(video_diagnostic_js())
+                    if diag:
+                        import json
+                        d = json.loads(diag)
+                        if d.get("rawVideos", 0) > 0 or d.get("hasVideoJS"):
+                            logger.warning(
+                                f"[视频进度诊断] frame={frame.url[:80]} "
+                                f"rawVideos={d.get('rawVideos')} "
+                                f"hasVideoJS={d.get('hasVideoJS')} "
+                                f"filteredCount={d.get('filteredCount')} "
+                                f"details={d.get('rawVideoDetails')}"
+                            )
+                except Exception:
+                    pass
+
         # Log progress
         if time.time() - last_progress_log > 15:
             progress_msg = f"视频总进度: {done_videos}/{total_videos}"
@@ -213,13 +338,25 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
 
         if all_done and total_videos > 0:
             # Videos ended naturally — check task point
-            if unfinished == 0:
+            # Require total_tasks > 0: avoid false positive from empty query result
+            if total_tasks > 0 and unfinished == 0:
                 logger.info("全部视频已结束且任务点已完成，执行导航...")
                 from actions.navigation import try_click_next_section
                 nav_ok = try_click_next_section(page)
                 if nav_ok:
                     time.sleep(2)
                     return True
+                # Check frame-level change (iframe content swap doesn't change page.url)
+                try:
+                    new_frames = {f.url for f in page.frames}
+                    had_video = any('ananas/modules/video' in u for u in frame_urls_start)
+                    has_video_now = any('ananas/modules/video' in u for u in new_frames)
+                    if had_video and not has_video_now:
+                        logger.info("导航已发生（视频 frame 已消失），返回主循环重新检测")
+                        time.sleep(2)
+                        return True
+                except Exception:
+                    pass
                 logger.warning("导航被阻止，继续重试...")
             else:
                 if not retry_injected:

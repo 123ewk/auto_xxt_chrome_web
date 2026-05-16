@@ -129,6 +129,13 @@ def click_popup_next_chapter(page: Page) -> bool:
 
     因此策略改为：直接从 onclick 属性提取 PCount.next() 调用并 eval 执行。
 
+    关于执行上下文销毁（Bug 2 fix）：
+      PCount.next() 触发页面导航 → Playwright 销毁当前执行上下文 →
+      frame.evaluate() 的 Promise 被 reject。这是**成功的标志**，不是失败。
+      修复：捕获异常后 wait 0.5s 再检查 URL（给导航时间启动），
+      且优先在顶层 frame 执行（弹窗始终在顶层），避免遍历所有 frame
+      时每个都因上下文销毁而抛异常。
+
     Args:
         page: Playwright Page 对象。
 
@@ -176,25 +183,54 @@ def click_popup_next_chapter(page: Page) -> bool:
         "})()"
     )
 
-    # 弹窗在顶层 frame，优先在顶层 frame 执行
     url_before = page.url
+
+    # --- Phase A: top frame first (popups are always in the top frame) ---
+    nav_exception = False
+    try:
+        result = page.evaluate(js_extract_pcount)
+        if result:
+            logger.info("弹窗「下一节」点击成功（PCount.next 调用）")
+            return True
+    except Exception:
+        # PCount.next() 触发页面导航会销毁执行上下文，导致 evaluate 抛异常。
+        # 这是成功的标志，不是失败！给导航 0.5s 启动时间再检查 URL。
+        nav_exception = True
+
+    if nav_exception:
+        time.sleep(0.5)
+        try:
+            # 等待导航开始（domcontentloaded 是最早的可靠信号）
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        try:
+            if page.url != url_before:
+                logger.info("弹窗「下一节」点击成功（PCount.next 触发导航，执行上下文已销毁）")
+                return True
+        except Exception:
+            pass
+
+    # --- Phase B: iframe fallback (only if top frame didn't trigger navigation) ---
     for frame in page.frames:
+        if frame == page:
+            continue  # already tried top frame
         try:
             result = frame.evaluate(js_extract_pcount)
             if result:
-                logger.info("弹窗「下一节」点击成功（PCount.next 调用）")
+                logger.info("弹窗「下一节」点击成功（iframe PCount.next 调用）")
                 return True
         except Exception:
-            # PCount.next() 触发页面导航会销毁执行上下文，导致 evaluate 抛异常
-            # 这是成功导航的标志，不是失败！检查 URL 是否变化
+            # Same pattern: context destruction = success
+            time.sleep(0.3)
             try:
                 if page.url != url_before:
-                    logger.info("弹窗「下一节」点击成功（PCount.next 触发导航，执行上下文已销毁）")
+                    logger.info("弹窗「下一节」点击成功（iframe PCount.next 触发导航）")
                     return True
             except Exception:
                 pass
 
-    # 策略2：Playwright locator 兜底（mask 层可能不总是存在）
+    # --- Phase C: Playwright locator 兜底（mask 层可能不总是存在）---
     for frame in page.frames:
         try:
             btn = frame.locator(".popDiv:has(.nextChapter) .nextChapter")
