@@ -193,7 +193,7 @@ def main_loop(stop_event=None):
                             f.evaluate(scroll_to_bottom_js())
                         except Exception:
                             pass
-                time.sleep(1.5)
+                time.sleep(0.5)
             except Exception as e:
                 logger.warning(f"页面滚动失败: {e}")
 

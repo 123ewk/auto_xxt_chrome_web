@@ -641,7 +641,7 @@ def navigate_next_js() -> str:
         "console.log('JS_NAV: success (URL changed)');return;"
         "}"
         # Timeout
-        "if(elapsed>45000){"
+        "if(elapsed>15000){"
         "console.log('JS_NAV: timeout');return;"
         "}"
         # Check popup first
@@ -662,25 +662,25 @@ def navigate_next_js() -> str:
         # Method 3: dispatch real MouseEvent (works where .click() doesn't on <a>)
         "try{popup.btn.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}"
         "console.log('JS_NAV: clicked popup next (attempt '+_popupClickCount+'/'+_popupClickMax+')');"
-        "setTimeout(_poll,800);return;"
+        "setTimeout(_poll,400);return;"
         "}"
         # No clickable button but popup says task unfinished → report failure
         "if(popup.hasTaskUnfinished&&_popupClickCount>=_popupClickMax){"
         "window.__autoNavFailedReason='task_unfinished';"
         "console.log('JS_NAV: popup says task unfinished, exhausted retries');"
-        "setTimeout(_poll,800);return;"
+        "setTimeout(_poll,400);return;"
         "}"
         # Click main nav button
         "if(!_clicked){"
-        "if(elapsed%3000<800)_scrollAll();"  # re-scroll every ~3s in case content loaded
+        "if(elapsed%3000<400)_scrollAll();"  # re-scroll every ~3s in case content loaded
         "var b=_findNavBtn();"
         "if(b&&b.offsetParent!==null){"
         "b.click();_clicked=true;"
         "console.log('JS_NAV: clicked main next');"
-        "setTimeout(_poll,800);return;"
+        "setTimeout(_poll,400);return;"
         "}"
         "}"
-        "setTimeout(_poll,800);"
+        "setTimeout(_poll,400);"
         "}"
         "_poll();"
         "})()"

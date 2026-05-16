@@ -21,12 +21,12 @@ CHROME_PROFILE_DIR = None
 COURSE_URL = os.environ.get("XXT_COURSE_URL", "")
 
 # Video monitoring
-VIDEO_CHECK_INTERVAL = 5       # seconds between video state checks
+VIDEO_CHECK_INTERVAL = 2       # seconds between video state checks
 VIDEO_FINISH_TIMEOUT = 7200    # max seconds waiting for a video to finish (2h)
 SPEED_DEFAULT = 2.0            # target playback speed
 
 # Navigation
-SECTION_CHECK_INTERVAL = 3     # seconds between section-change checks
+SECTION_CHECK_INTERVAL = 1     # seconds between section-change checks
 
 # Logging
 LOG_FILE = LOGS_DIR / "session.log"

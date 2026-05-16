@@ -296,7 +296,10 @@ def try_click_next_section(page: Page) -> bool:
             try:
                 if page.url != url_before_try:
                     logger.info("DOM 导航成功（URL已变化，执行上下文已销毁）")
-                    time.sleep(3)
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    except Exception:
+                        time.sleep(1)
                     return True
             except Exception:
                 pass
@@ -320,10 +323,13 @@ def try_click_next_section(page: Page) -> bool:
 
     # 1. Main frame
     logger.info("DOM 导航：查找下一节按钮（主 frame）...")
-    if _try_frame(page, timeout=45000):
+    if _try_frame(page, timeout=15000):
         if page.url != url_before:
             logger.info("DOM 导航成功（主 frame）")
-            time.sleep(3)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except Exception:
+                time.sleep(1)
             return True
         logger.info("主 frame 导航标记成功，URL 未变，检查 iframe...")
 
@@ -345,7 +351,10 @@ def try_click_next_section(page: Page) -> bool:
         if _try_frame(frame, timeout=15000):
             if page.url != url_before:
                 logger.info(f"DOM 导航成功（iframe）")
-                time.sleep(3)
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=5000)
+                except Exception:
+                    time.sleep(1)
                 return True
             else:
                 logger.info("iframe 导航标记成功但 URL 未变")

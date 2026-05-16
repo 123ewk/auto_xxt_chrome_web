@@ -141,7 +141,7 @@ def monitor_video_progress(page: Page, stop_event=None) -> bool:
     retry_injected = False
 
     # Give auto-nav time to initialize in all frames
-    time.sleep(5)
+    time.sleep(2)
 
     logger.info("=== 监控视频进度 + 任务点检测（16x 连续播放模式）===")
 
